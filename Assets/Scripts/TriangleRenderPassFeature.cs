@@ -12,6 +12,7 @@ public class TriangleRenderFeature : ScriptableRendererFeature
         private int kernelID;
         private ProfilingSampler sampler;
         private Material overlayMaterial;
+        private float time; // 🎯 시간 변수 추가
 
         // Compute Shader 최적화를 위한 변수
         private Vector2 edge0, edge1, edge2;
@@ -23,8 +24,9 @@ public class TriangleRenderFeature : ScriptableRendererFeature
             kernelID = computeShader.FindKernel("CSMain");
             sampler = new ProfilingSampler("TriangleRenderPass");
             renderPassEvent = RenderPassEvent.AfterRendering; // 렌더링 순서
-            overlayMaterial = CoreUtils.CreateEngineMaterial("Hidden/TriangleOverlay");
-            // 생성자에서는 RTHandle을 할당하지 않습니다.
+
+            overlayMaterial = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/TriangleOverlay"));
+
         }
 
         public void Setup(int width, int height, RenderTextureDescriptor cameraDescriptor)
@@ -44,12 +46,16 @@ public class TriangleRenderFeature : ScriptableRendererFeature
                     RTHandles.Release(overlayRT);
                 }
                 overlayRT = RTHandles.Alloc(desc);
+                Debug.Log($"📌 [RT 크기 확인] overlayRT: {overlayRT.rt.width}x{overlayRT.rt.height}, Camera: {width}x{height}");
             }
 
             // 삼각형의 정점 (UV 공간) - Compute Shader와 동일하게 유지
-            v0 = new Vector2(0.3f, 0.2f);
-            v1 = new Vector2(0.7f, 0.2f);
-            v2 = new Vector2(0.5f, 0.8f);
+            // ✅ 삼각형 정점 좌표를 픽셀 기준으로 변환
+            v0 = new Vector2(0.5f * width, 0.2f * height);
+            v1 = new Vector2(0.7f * width, 0.8f * height);
+            v2 = new Vector2(0.3f * width, 0.8f * height);
+
+            Debug.Log($"📌 v0: {v0}, v1: {v1}, v2: {v2}");
 
             edge0 = v1 - v0;
             edge1 = v2 - v1;
@@ -58,10 +64,12 @@ public class TriangleRenderFeature : ScriptableRendererFeature
             computeShader.SetVector("edge0", edge0);
             computeShader.SetVector("edge1", edge1);
             computeShader.SetVector("edge2", edge2);
+
             computeShader.SetVector("v0", v0);
             computeShader.SetVector("v1", v1);
             computeShader.SetVector("v2", v2);
-            computeShader.SetTexture(kernelID, "Result", overlayRT);
+
+            computeShader.SetTexture(kernelID, "Result", overlayRT.rt);
             computeShader.SetInt("width", width);
             computeShader.SetInt("height", height);
         }
@@ -76,12 +84,29 @@ public class TriangleRenderFeature : ScriptableRendererFeature
                 int dispatchX = Mathf.CeilToInt(width / 8f);
                 int dispatchY = Mathf.CeilToInt(height / 8f);
 
+
+                // 🎯 시간 기반으로 색상 변경
+                time += Time.deltaTime;
+                float r = Mathf.Abs(Mathf.Sin(time * 2.0f));
+                float g = Mathf.Abs(Mathf.Cos(time * 2.0f));
+                float b = Mathf.Abs(Mathf.Sin(time * 1.5f));
+                Vector4 newColor = new Vector4(r, g, b, 1.0f);
+
+                computeShader.SetVector("triangleColor", newColor);
+
                 computeShader.Dispatch(kernelID, dispatchX, dispatchY, 1);
 
-                Debug.Log("Blit 호출됨!"); // 이 로그가 출력되는지 확인
-                Blit(cmd, overlayRT, renderingData.cameraData.renderer.cameraColorTargetHandle, overlayMaterial);
-                //Blit(cmd, overlayRT, renderingData.cameraData.renderer.cameraColorTargetHandle);
+                overlayMaterial.SetTexture("_MainTex", overlayRT);
+
+                //Blitter.BlitCameraTexture(cmd, overlayRT, renderingData.cameraData.renderer.cameraColorTargetHandle, overlayMaterial, 0);
+                //Blitter.BlitCameraTexture(cmd, overlayRT, renderingData.cameraData.renderer.cameraColorTargetHandle);
+                cmd.SetViewport(new Rect(0, 0, Screen.width, Screen.height));
+                cmd.Blit(overlayRT, renderingData.cameraData.renderer.cameraColorTargetHandle, overlayMaterial);
+                //cmd.Blit(overlayRT, renderingData.cameraData.renderer.cameraColorTargetHandle);
+
+                Debug.Log("Blit 호출됨!");
             }
+
             context.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);
         }
@@ -110,10 +135,7 @@ public class TriangleRenderFeature : ScriptableRendererFeature
     public override void Create()
     {
         //이미 renderPass가 있다면 Dispose()를 호출하여 확실하게 해제.
-        if (renderPass != null)
-        {
-            renderPass.Dispose();
-        }
+        renderPass?.Dispose();
         renderPass = new TriangleRenderPass(computeShader);
     }
 
@@ -126,6 +148,7 @@ public class TriangleRenderFeature : ScriptableRendererFeature
         renderPass.Setup(width, height, cameraDescriptor);
         renderer.EnqueuePass(renderPass);
     }
+
 
     // ScriptableRendererFeature가 제거될 때 호출되는 메서드를 추가합니다.
     protected override void Dispose(bool disposing)

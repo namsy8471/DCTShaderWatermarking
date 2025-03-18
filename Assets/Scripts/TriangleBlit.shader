@@ -1,45 +1,39 @@
-﻿// TriangleOverlay.shader (원래 코드로 복구)
-Shader "Hidden/TriangleOverlay"
+﻿Shader "Hidden/TriangleOverlay"
 {
     SubShader
     {
-        Tags { "Queue"="Transparent" "RenderType"="Transparent" }
+        Tags { "RenderType"="Transparent" "Queue"="Overlay"}
+        Blend SrcAlpha OneMinusSrcAlpha
+        ZWrite Off
+        ZTest Off
+        Cull Off
+
         Pass
         {
-            Blend SrcAlpha OneMinusSrcAlpha  // Alpha blending
-            ZTest Always
-            ZWrite Off
-            Cull Off
-
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag
             #include "UnityCG.cginc"
 
-            struct appdata {
-                float4 vertex : POSITION;
-                float2 uv : TEXCOORD0;
-            };
+            sampler2D _MainTex;
 
-            struct v2f {
+            struct v2f
+            {
                 float4 pos : SV_POSITION;
                 float2 uv : TEXCOORD0;
             };
 
-            v2f vert(appdata v)
+            v2f vert (float4 pos : POSITION)
             {
                 v2f o;
-                o.pos = UnityObjectToClipPos(v.vertex);
-                o.uv = v.uv;
+                o.pos = UnityObjectToClipPos(pos);
+                o.uv = pos.xy;
                 return o;
             }
 
-            sampler2D _MainTex; // Compute Shader에서 만든 overlayRT
-
-            fixed4 frag(v2f i) : SV_Target
+            fixed4 frag (v2f i) : SV_Target
             {
-                return tex2D(_MainTex, i.uv);  // overlayRT를 화면에 출력
-                //return float4(1, 0, 0, 0.5f);  // 빨간색으로 출력
+                return tex2D(_MainTex, i.uv); // 🚀 overlayRT의 원본 데이터를 유지
             }
             ENDCG
         }
