@@ -1,0 +1,37 @@
+// TriangleCompute.compute
+#pragma kernel CSMain
+
+RWTexture2D<float4> Result;
+uint width, height;
+
+float2 edge0, edge1, edge2; // 미리 계산된 edge 값
+float2 v0, v1, v2;
+
+bool IsInsideTriangle(float2 p)
+{
+    float2 c0 = p - v0;
+    float2 c1 = p - v1;
+    float2 c2 = p - v2;
+    float cross0 = edge0.x * c0.y - edge0.y * c0.x;
+    float cross1 = edge1.x * c1.y - edge1.y * c1.x;
+    float cross2 = edge2.x * c2.y - edge2.y * c2.x;
+    return ((cross0 >= 0 && cross1 >= 0 && cross2 >= 0) || (cross0 <= 0 && cross1 <= 0 && cross2 <= 0));
+}
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= width || id.y >= height)
+        return;
+
+    float2 uv = float2(id.x / (float) width, id.y / (float) height);
+
+    if (IsInsideTriangle(uv))
+    {
+        Result[id.xy] = float4(1, 0, 0, 1);
+    }
+    else
+    {
+        Result[id.xy] = float4(0, 0, 0, 0);
+    }
+}
