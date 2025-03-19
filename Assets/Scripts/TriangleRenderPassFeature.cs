@@ -23,7 +23,7 @@ public class TriangleRenderFeature : ScriptableRendererFeature
             computeShader = shader;
             kernelID = computeShader.FindKernel("CSMain");
             sampler = new ProfilingSampler("TriangleRenderPass");
-            renderPassEvent = RenderPassEvent.AfterRendering; // 렌더링 순서
+            renderPassEvent = RenderPassEvent.AfterRendering;
 
             overlayMaterial = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/TriangleOverlay"));
 
@@ -46,28 +46,26 @@ public class TriangleRenderFeature : ScriptableRendererFeature
                     RTHandles.Release(overlayRT);
                 }
                 overlayRT = RTHandles.Alloc(desc);
-                Debug.Log($"📌 [RT 크기 확인] overlayRT: {overlayRT.rt.width}x{overlayRT.rt.height}, Camera: {width}x{height}");
             }
 
-            // 삼각형의 정점 (UV 공간) - Compute Shader와 동일하게 유지
-            // ✅ 삼각형 정점 좌표를 픽셀 기준으로 변환
-            v0 = new Vector2(0.5f * width, 0.2f * height);
-            v1 = new Vector2(0.7f * width, 0.8f * height);
-            v2 = new Vector2(0.3f * width, 0.8f * height);
-
-            Debug.Log($"📌 v0: {v0}, v1: {v1}, v2: {v2}");
+            // 삼각형 정점 좌표를 한 번만 계산하고 ComputeShader로 전달
+            v0 = new Vector2(0.5f * width, (1.0f - 0.4f) * height);
+            v1 = new Vector2(0.55f * width, (1.0f - 0.6f) * height);
+            v2 = new Vector2(0.45f * width, (1.0f - 0.6f) * height);
 
             edge0 = v1 - v0;
             edge1 = v2 - v1;
             edge2 = v0 - v2;
 
-            computeShader.SetVector("edge0", edge0);
-            computeShader.SetVector("edge1", edge1);
-            computeShader.SetVector("edge2", edge2);
+            computeShader.SetVector("v0", new Vector4(v0.x, v0.y, 0, 0));
+            computeShader.SetVector("v1", new Vector4(v1.x, v1.y, 0, 0));
+            computeShader.SetVector("v2", new Vector4(v2.x, v2.y, 0, 0));
 
-            computeShader.SetVector("v0", v0);
-            computeShader.SetVector("v1", v1);
-            computeShader.SetVector("v2", v2);
+            computeShader.SetVector("edge0", new Vector4(edge0.x, edge0.y, 0, 0));
+            computeShader.SetVector("edge1", new Vector4(edge1.x, edge1.y, 0, 0));
+            computeShader.SetVector("edge2", new Vector4(edge2.x, edge2.y, 0, 0));
+
+            computeShader.SetVector("triangleColor", new Vector4(0, 1, 0, 0.2f));
 
             computeShader.SetTexture(kernelID, "Result", overlayRT.rt);
             computeShader.SetInt("width", width);
@@ -86,13 +84,13 @@ public class TriangleRenderFeature : ScriptableRendererFeature
 
 
                 // 🎯 시간 기반으로 색상 변경
-                time += Time.deltaTime;
-                float r = Mathf.Abs(Mathf.Sin(time * 2.0f));
-                float g = Mathf.Abs(Mathf.Cos(time * 2.0f));
-                float b = Mathf.Abs(Mathf.Sin(time * 1.5f));
-                Vector4 newColor = new Vector4(r, g, b, 1.0f);
+                //time += Time.deltaTime;
+                //float r = Mathf.Abs(Mathf.Sin(time * 2.0f));
+                //float g = Mathf.Abs(Mathf.Cos(time * 2.0f));
+                //float b = Mathf.Abs(Mathf.Sin(time * 1.5f));
+                //Vector4 newColor = new Vector4(r, g, b, 1.0f);
 
-                computeShader.SetVector("triangleColor", newColor);
+                //computeShader.SetVector("triangleColor", newColor);
 
                 computeShader.Dispatch(kernelID, dispatchX, dispatchY, 1);
 
@@ -100,11 +98,10 @@ public class TriangleRenderFeature : ScriptableRendererFeature
 
                 //Blitter.BlitCameraTexture(cmd, overlayRT, renderingData.cameraData.renderer.cameraColorTargetHandle, overlayMaterial, 0);
                 //Blitter.BlitCameraTexture(cmd, overlayRT, renderingData.cameraData.renderer.cameraColorTargetHandle);
-                cmd.SetViewport(new Rect(0, 0, Screen.width, Screen.height));
+                //cmd.SetViewport(new Rect(0, 0, Screen.width, Screen.height));
                 cmd.Blit(overlayRT, renderingData.cameraData.renderer.cameraColorTargetHandle, overlayMaterial);
                 //cmd.Blit(overlayRT, renderingData.cameraData.renderer.cameraColorTargetHandle);
 
-                Debug.Log("Blit 호출됨!");
             }
 
             context.ExecuteCommandBuffer(cmd);
@@ -131,16 +128,29 @@ public class TriangleRenderFeature : ScriptableRendererFeature
     [SerializeField] private ComputeShader computeShader;
 
     private TriangleRenderPass renderPass;
+    private float lastTime;
+    private readonly float interval = 0.5f;
 
     public override void Create()
     {
         //이미 renderPass가 있다면 Dispose()를 호출하여 확실하게 해제.
         renderPass?.Dispose();
+
+        lastTime = Time.time - interval;
         renderPass = new TriangleRenderPass(computeShader);
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
+        if (Time.time - lastTime < interval)
+        {
+            Debug.Log("워터마킹 비작동" + interval + " 초 이전");
+            return;
+        }
+
+        lastTime = Time.time;  // ✅ 0.5초마다 정확하게 갱신
+        Debug.Log("워터마킹 작동" + interval + " 초 이후");
+
         int width = renderingData.cameraData.camera.pixelWidth;
         int height = renderingData.cameraData.camera.pixelHeight;
         RenderTextureDescriptor cameraDescriptor = renderingData.cameraData.cameraTargetDescriptor;
