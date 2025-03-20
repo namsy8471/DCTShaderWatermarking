@@ -1,4 +1,5 @@
 ﻿// TriangleRenderFeature.cs
+//using UnityEditor.Search;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -12,7 +13,6 @@ public class TriangleRenderFeature : ScriptableRendererFeature
         private int kernelID;
         private ProfilingSampler sampler;
         private Material overlayMaterial;
-        private float time; // 🎯 시간 변수 추가
 
         // Compute Shader 최적화를 위한 변수
         private Vector2 edge0, edge1, edge2;
@@ -65,7 +65,7 @@ public class TriangleRenderFeature : ScriptableRendererFeature
             computeShader.SetVector("edge1", new Vector4(edge1.x, edge1.y, 0, 0));
             computeShader.SetVector("edge2", new Vector4(edge2.x, edge2.y, 0, 0));
 
-            computeShader.SetVector("triangleColor", new Vector4(0, 1, 0, 0.2f));
+            computeShader.SetVector("triangleColor", new Vector4(0, 1, 0, 0.6f));
 
             computeShader.SetTexture(kernelID, "Result", overlayRT.rt);
             computeShader.SetInt("width", width);
@@ -79,9 +79,9 @@ public class TriangleRenderFeature : ScriptableRendererFeature
             {
                 int width = renderingData.cameraData.camera.pixelWidth;
                 int height = renderingData.cameraData.camera.pixelHeight;
+
                 int dispatchX = Mathf.CeilToInt(width / 8f);
                 int dispatchY = Mathf.CeilToInt(height / 8f);
-
 
                 // 🎯 시간 기반으로 색상 변경
                 //time += Time.deltaTime;
@@ -129,34 +129,53 @@ public class TriangleRenderFeature : ScriptableRendererFeature
 
     private TriangleRenderPass renderPass;
     private float lastTime;
-    private readonly float interval = 0.5f;
+    private float interval;
+    private readonly float displayDuration = 0.1f;
+    private bool isWatermarkActive = false;
 
     public override void Create()
     {
         //이미 renderPass가 있다면 Dispose()를 호출하여 확실하게 해제.
         renderPass?.Dispose();
 
+        interval = 1.0f - displayDuration;
         lastTime = Time.time - interval;
         renderPass = new TriangleRenderPass(computeShader);
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
-        if (Time.time - lastTime < interval)
+        if (!isWatermarkActive)
         {
-            Debug.Log("워터마킹 비작동" + interval + " 초 이전");
-            return;
+            Debug.Log("워터마킹 비작동" + interval + " 초 동안");
+
+            if (Time.time - lastTime >= interval)
+            {
+                isWatermarkActive = true;  // ✅ 워터마킹 활성화
+                lastTime = Time.time;
+
+                return;
+            }
         }
 
-        lastTime = Time.time;  // ✅ 0.5초마다 정확하게 갱신
-        Debug.Log("워터마킹 작동" + interval + " 초 이후");
+        else
+        {
+            if(Time.time - lastTime >= displayDuration)
+            {
+                isWatermarkActive = false;
+                lastTime = Time.time;
+                return;
+            }
 
-        int width = renderingData.cameraData.camera.pixelWidth;
-        int height = renderingData.cameraData.camera.pixelHeight;
-        RenderTextureDescriptor cameraDescriptor = renderingData.cameraData.cameraTargetDescriptor;
+            Debug.Log("워터마킹 작동" + displayDuration + " 초 동안");
 
-        renderPass.Setup(width, height, cameraDescriptor);
-        renderer.EnqueuePass(renderPass);
+            int width = renderingData.cameraData.camera.pixelWidth;
+            int height = renderingData.cameraData.camera.pixelHeight;
+            RenderTextureDescriptor cameraDescriptor = renderingData.cameraData.cameraTargetDescriptor;
+
+            renderPass.Setup(width, height, cameraDescriptor);
+            renderer.EnqueuePass(renderPass);
+        }
     }
 
 

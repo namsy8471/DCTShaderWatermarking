@@ -8,13 +8,12 @@ uint height;
 float4 v0, v1, v2;
 float4 edge0, edge1, edge2;
 
-float4 triangleColor; // 🎨 삼각형 색상을 위한 변수
+float4 triangleColor;
 
 [numthreads(8, 8, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= width || id.y >= height)
-        return;
+    if (id.x >= width || id.y >= height) return;
 
     float2 p = float2(id.x, id.y);
     
