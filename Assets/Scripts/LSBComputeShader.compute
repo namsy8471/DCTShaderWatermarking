@@ -1,0 +1,58 @@
+//#pragma kernel LSBComputeShader
+
+//RWTexture2D<float4> Result;
+//Texture2D<float4> Source;
+
+//uint Width;
+//uint Height;
+//int Embed;
+
+//[numthreads(8, 8, 1)]
+//void LSBComputeShader(uint3 id : SV_DispatchThreadID)
+//{
+//    if (id.x >= Width || id.y >= Height)
+//    {
+//        return;
+//    }
+        
+//    float4 pixel = Source.Load(int3(id.xy, 0));
+    
+//    if (Embed == 1)
+//    {
+//        uint bit = id.x % 2;
+//        uint r = (uint) (pixel.r * 255.0);
+//        r = (r & 0xFE) | bit;
+//        pixel.r = r / 255.0;
+    
+//    }
+    
+
+//    Result[id.xy] = pixel;
+//}
+
+#pragma kernel LSBComputeShader
+
+RWTexture2D<uint4> Result;
+Texture2D<uint4> Source;
+
+uint Width;
+uint Height;
+uint Embed;
+
+[numthreads(8, 8, 1)]
+void LSBComputeShader(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= Width || id.y >= Height)
+        return;
+
+    uint4 pixel = Source.Load(int3(id.xy, 0));
+
+    if (Embed == 1)
+    {
+        // 예시 워터마크 비트: X좌표가 홀수면 1, 짝수면 0
+        //uint bit = id.x % 2;
+        pixel.r = pixel.r ^ 1; // 마지막 비트(LSB) 반전
+    }
+
+    Result[id.xy] = pixel;
+}

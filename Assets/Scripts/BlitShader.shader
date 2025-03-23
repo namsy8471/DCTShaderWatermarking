@@ -1,4 +1,4 @@
-﻿Shader "Hidden/TriangleOverlay"
+﻿Shader "Hidden/BlitOverlay"
 {
     SubShader
     {

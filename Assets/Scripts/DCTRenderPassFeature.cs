@@ -1,12 +1,10 @@
-﻿// TriangleRenderFeature.cs
-//using UnityEditor.Search;
-using UnityEngine;
+﻿using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 
-public class TriangleRenderFeature : ScriptableRendererFeature
+public class DCTRenderFeature : ScriptableRendererFeature
 {
-    class TriangleRenderPass : ScriptableRenderPass
+    class DCTRenderPass : ScriptableRenderPass
     {
         private ComputeShader computeShader;
         private RTHandle overlayRT;
@@ -18,15 +16,14 @@ public class TriangleRenderFeature : ScriptableRendererFeature
         private Vector2 edge0, edge1, edge2;
         private Vector2 v0, v1, v2;
 
-        public TriangleRenderPass(ComputeShader shader)
+        public DCTRenderPass(ComputeShader shader)
         {
             computeShader = shader;
             kernelID = computeShader.FindKernel("CSMain");
-            sampler = new ProfilingSampler("TriangleRenderPass");
+            sampler = new ProfilingSampler("DCTRenderPass");
             renderPassEvent = RenderPassEvent.AfterRendering;
 
             overlayMaterial = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/BlitOverlay"));
-
         }
 
         public void Setup(int width, int height, RenderTextureDescriptor cameraDescriptor)
@@ -65,7 +62,7 @@ public class TriangleRenderFeature : ScriptableRendererFeature
             computeShader.SetVector("edge1", new Vector4(edge1.x, edge1.y, 0, 0));
             computeShader.SetVector("edge2", new Vector4(edge2.x, edge2.y, 0, 0));
 
-            computeShader.SetVector("triangleColor", new Vector4(0, 1, 0, 0.1f));
+            computeShader.SetVector("triangleColor", new Vector4(0, 1, 0, 0.6f));
 
             computeShader.SetTexture(kernelID, "Result", overlayRT.rt);
             computeShader.SetInt("width", width);
@@ -85,15 +82,6 @@ public class TriangleRenderFeature : ScriptableRendererFeature
 
                 int dispatchX = Mathf.CeilToInt(width / 8f);
                 int dispatchY = Mathf.CeilToInt(height / 8f);
-
-                // 🎯 시간 기반으로 색상 변경
-                //time += Time.deltaTime;
-                //float r = Mathf.Abs(Mathf.Sin(time * 2.0f));
-                //float g = Mathf.Abs(Mathf.Cos(time * 2.0f));
-                //float b = Mathf.Abs(Mathf.Sin(time * 1.5f));
-                //Vector4 newColor = new Vector4(r, g, b, 1.0f);
-
-                //computeShader.SetVector("triangleColor", newColor);
 
                 computeShader.Dispatch(kernelID, dispatchX, dispatchY, 1);
 
@@ -129,7 +117,7 @@ public class TriangleRenderFeature : ScriptableRendererFeature
 
     [SerializeField] private ComputeShader computeShader;
 
-    private TriangleRenderPass renderPass;
+    private DCTRenderPass renderPass;
     private float lastTime;
     private float interval;
     private readonly float displayDuration = 0.1f;
@@ -142,7 +130,7 @@ public class TriangleRenderFeature : ScriptableRendererFeature
 
         interval = 1.0f - displayDuration;
         lastTime = Time.time - interval;
-        renderPass = new TriangleRenderPass(computeShader);
+        renderPass = new DCTRenderPass(computeShader);
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
