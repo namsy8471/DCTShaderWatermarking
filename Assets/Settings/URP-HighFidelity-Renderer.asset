@@ -16,6 +16,22 @@ MonoBehaviour:
   computeShader: {fileID: 7200000, guid: 786ed288fc52e5d4489fcaf148b2a88c, type: 3}
   embedWatermark: 1
   profilerTag: LSB Watermark Pass
+--- !u!114 &-6172274661494896331
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ca569e336a0fadf4589fa197a066459a, type: 3}
+  m_Name: LSBRenderFeature
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  computeShader: {fileID: 7200000, guid: 786ed288fc52e5d4489fcaf148b2a88c, type: 3}
+  embedWatermark: 1
+  profilerTag: LSB Watermark Pass
 --- !u!114 &-5080310814147370683
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -97,10 +113,9 @@ MonoBehaviour:
     hdrDebugViewPS: {fileID: 4800000, guid: 573620ae32aec764abd4d728906d2587, type: 3}
   m_RendererFeatures:
   - {fileID: -1878332245247344467}
-  - {fileID: 8175864777685475406}
-  - {fileID: -5080310814147370683}
-  - {fileID: -6575308690640035461}
-  m_RendererFeatureMap: adc0de57c6d2eee54e20929db281767145a12b2e3b1c7fb97ba1dc5595cfbfa4
+  - {fileID: 6690638146467207930}
+  - {fileID: -6172274661494896331}
+  m_RendererFeatureMap: adc0de57c6d2eee5fa1adb18f2ebd95c35c973c1e5ac57aa
   m_UseNativeRenderPass: 0
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
   xrSystemData: {fileID: 11400000, guid: 60e1133243b97e347b653163a8c01b64, type: 2}
@@ -149,6 +164,20 @@ MonoBehaviour:
   m_CopyDepthMode: 0
   m_AccurateGbufferNormals: 0
   m_IntermediateTextureMode: 1
+--- !u!114 &6690638146467207930
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 53faf76aebdff0d42930e3900a60f84e, type: 3}
+  m_Name: TriangleRenderFeature
+  m_EditorClassIdentifier: 
+  m_Active: 0
+  computeShader: {fileID: 7200000, guid: e517efc804f4e3245b995b105f90d3bc, type: 3}
 --- !u!114 &8175864777685475406
 MonoBehaviour:
   m_ObjectHideFlags: 0
