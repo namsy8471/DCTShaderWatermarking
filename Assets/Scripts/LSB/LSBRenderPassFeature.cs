@@ -1,4 +1,7 @@
-﻿using UnityEngine;
+﻿using System.Collections.Generic;
+using System.IO;
+using UnityEditor.Hardware;
+using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -10,9 +13,11 @@ public class LSBRenderFeature : ScriptableRendererFeature
         ComputeShader computeShader;
         int embed;
         int kernelID;
-
         RTHandle sourceHandle;
         RTHandle resultHandle;
+
+        ComputeBuffer bitstreamBuffer;
+        List<uint> bitstreamData;
 
         string profilerTag = "LSB Watermark Pass";
 
@@ -28,7 +33,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
         {
             var desc = renderingData.cameraData.cameraTargetDescriptor;
 
-            desc.graphicsFormat = GraphicsFormat.R8G8B8A8_UInt;
+            //desc.graphicsFormat = GraphicsFormat.R8G8B8A8_UInt;
             desc.colorFormat = RenderTextureFormat.ARGB32;
             desc.depthBufferBits = 0;
             desc.enableRandomWrite = true;
@@ -49,6 +54,8 @@ public class LSBRenderFeature : ScriptableRendererFeature
             computeShader.SetInt("Width", desc.width);
             computeShader.SetInt("Height", desc.height);
             computeShader.SetInt("Embed", embed);
+            //computeShader.SetBuffer(kernelID, "Bitstream", bitstreamBuffer);
+            //computeShader.SetInt("BitLength", bitstreamBuffer.count);
         }
 
         public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
@@ -56,16 +63,15 @@ public class LSBRenderFeature : ScriptableRendererFeature
             CommandBuffer cmd = CommandBufferPool.Get(profilerTag);
 
             // 카메라 컬러 타겟을 RTHandle로 복사
-            
             var width = renderingData.cameraData.camera.pixelWidth;
             var height = renderingData.cameraData.camera.pixelHeight;
             int threadGroupsX = Mathf.CeilToInt(width / 8f);
             int threadGroupsY = Mathf.CeilToInt(height / 8f);
 
-            computeShader.Dispatch(kernelID, threadGroupsX, threadGroupsY, 1);
+            //computeShader.Dispatch(kernelID, threadGroupsX, threadGroupsY, 1);
 
             // 결과를 다시 카메라 컬러 타겟에 적용
-            cmd.Blit(resultHandle, renderingData.cameraData.renderer.cameraColorTargetHandle);
+            //cmd.Blit(resultHandle, renderingData.cameraData.renderer.cameraColorTargetHandle);
 
             context.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);
@@ -86,10 +92,13 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
     public override void Create()
     {
+        OriginBlock.GenerateAndSave("LSB.bytes", "LSB");  // 존재하면 무시
+
         pass = new LSBRenderPass(computeShader, profilerTag, embedWatermark)
         {
             renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing
         };
+
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
