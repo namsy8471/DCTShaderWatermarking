@@ -1,30 +1,25 @@
-﻿// ✅ 불변 OriginBlock 생성기: 최초 1회 생성 + 생성 시각 + .meta 정보 포함
+﻿// ✅ 불변 OriginBlock 생성기: 최초 1회 생성
 using System;
 using System.Text;
 using System.Security.Cryptography;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net;
 using System.Net.NetworkInformation;
 using Newtonsoft.Json;
 using UnityEngine;
-using Unity.VisualScripting;
 using UnityEditor;
 
 public class OriginBlock
 {
     [JsonProperty] private List<string> mac_addresses = new();  // 기기의 모든 MAC 주소
-    [JsonProperty] private string creation_time_utc;    // 파일 생성 시각
-    [JsonProperty] private string project_name;         // 대시보드에 저장된 프로젝트 이름
-    [JsonProperty] private string unityProjectID;         // 대시보드에 저장된 프로젝트 ID
+    [JsonProperty] private string creation_time_utc = "";    // 파일 생성 시각
+    [JsonProperty] private string project_name = "";         // 대시보드에 저장된 프로젝트 이름
+    [JsonProperty] private string unityProjectID = "";         // 대시보드에 저장된 프로젝트 ID
 
     public string ToJson() => JsonConvert.SerializeObject(this);
-    public static OriginBlock FromJson(string json)
-    {
-        File.WriteAllText("Assets/Scripts/LSB/OriginBlockRecovery.json", json);
-        return JsonConvert.DeserializeObject<OriginBlock>(json);
-    }
+    public static OriginBlock FromJson(string json) => JsonConvert.DeserializeObject<OriginBlock>(json);
+    
     public byte[] Encrypt(string aesKey)
     {
         using Aes aes = Aes.Create();
@@ -105,8 +100,11 @@ public class OriginBlock
     }
 
     // ✅ 최초 1회 .bytes 위장 저장 함수
-    public static void GenerateAndSave(string fileName, string aesKey)
+    public static void GenerateAndSave()
     {
+        string fileName = Application.productName;
+        string aesKey = Environment.UserName;
+
         string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
         string path = Path.Combine(projectRoot, fileName);
 
@@ -123,13 +121,73 @@ public class OriginBlock
         Debug.Log("✅ OriginBlock 저장 완료 (숨김+읽기전용): " + path);
     }
 
-    // ✅ Resources에서 .bytes 파일을 로드하고 복호화
-    public static OriginBlock LoadFromResources(string fileNameWithoutExtension, string aesKey)
+    // ✅ .bytes 파일을 로드하고 복호화
+    public static void LoadAndDecrypt()
     {
-        TextAsset asset = Resources.Load<TextAsset>(fileNameWithoutExtension);
-        if (asset == null) return null;
+        string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        string decodingFileName = Path.Combine(projectRoot, Application.productName);
 
-        byte[] encrypted = Convert.FromBase64String(asset.text);
-        return Decrypt(encrypted, aesKey);
+        string aesKey = Environment.UserName;
+
+        Debug.Log("🔍 OriginBlock 복호화 시작...");
+
+        if (!File.Exists(decodingFileName))
+        {
+            Debug.LogError("❌ " + decodingFileName + "에서 파일을 찾을 수 없습니다.");
+            return;
+        }
+
+        string encoded = File.ReadAllText(decodingFileName);
+
+        try
+        {
+            byte[] decodedFromBase64 = Convert.FromBase64String(encoded);
+            OriginBlock block = Decrypt(decodedFromBase64, aesKey);
+
+            string json = block.ToJson();
+            string absPath = Path.Combine(Application.dataPath, "Scripts/LSB/OriginBlockRecovery.json");
+
+            string dir = Path.GetDirectoryName(absPath);
+            if (!Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            File.WriteAllText(absPath, json);
+            Debug.Log("✅ 복호화 완료! JSON 저장 위치: " + absPath);
+            AssetDatabase.Refresh();
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError("⚠️ 복호화 중 오류 발생: " + ex.Message);
+        }
+    }
+
+    public static List<uint> GetBitstream()
+    {
+        string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        string decodingFileName = Path.Combine(projectRoot, Application.productName);
+
+        if (!File.Exists(decodingFileName))
+        {
+            Debug.LogError("❌ OriginBlock 파일이 존재하지 않습니다: " + decodingFileName);
+            return null;
+        }
+
+        string encoded = File.ReadAllText(decodingFileName);
+        byte[] encrypted = Convert.FromBase64String(encoded);
+        
+        List<uint> bits = ToBitstream(encrypted);
+
+        int targetBitLength = Screen.width * Screen.height;
+        
+        while(bits.Count < targetBitLength)
+        {
+            Debug.LogError("❌ OriginBlock 비트스트림 길이 부족: " + bits.Count + " < " + targetBitLength);
+            bits.AddRange(bits);
+            Debug.LogError("❌ OriginBlock 비트스트림 길이 증량, 현재 비트스트림 길이 " + bits.Count);
+        }
+
+        bits = bits.Take(targetBitLength).ToList(); // 딱 맞게 자름
+
+        return bits;
     }
 }

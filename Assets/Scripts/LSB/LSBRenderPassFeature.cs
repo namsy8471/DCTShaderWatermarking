@@ -92,7 +92,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
     public override void Create()
     {
-        OriginBlock.GenerateAndSave("LSB.bytes", "LSB");  // 존재하면 무시
+        OriginBlock.GenerateAndSave();
 
         pass = new LSBRenderPass(computeShader, profilerTag, embedWatermark)
         {
