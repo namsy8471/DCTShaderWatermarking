@@ -1,13 +1,13 @@
-#pragma kernel LSBComputeShader
+﻿#pragma kernel LSBComputeShader
 
-RWTexture2D<uint4> Result;
-Texture2D<uint4> Source;
+RWTexture2D<float4> Result;
+Texture2D<float4> Source;
 
 StructuredBuffer<uint> Bitstream;
+uint BitLength;
 
 uint Width;
 uint Height;
-uint BitLength;
 uint Embed;
 
 [numthreads(8, 8, 1)]
@@ -17,13 +17,29 @@ void LSBComputeShader(uint3 id : SV_DispatchThreadID)
     if (id.x >= Width || id.y >= Height || index >= BitLength)
         return;
 
-    uint4 pixel = Source.Load(int3(id.xy, 0));
+    //uint4 pixel = Source.Load(int3(id.xy, 0));
+
+    //if (Embed == 1)
+    //{
+    //    uint bit = Bitstream[index];
+    //    pixel.r = (pixel.r & 0xFFFFFFFE) | bit;
+    //}
+    
+    float4 pixel = Source.Load(int3(id.xy, 0)); // float4로 로드
 
     if (Embed == 1)
     {
         uint bit = Bitstream[index];
-        pixel.r = (pixel.r & 0xFFFFFFFE) | bit;
-    }
 
+        // Red 채널을 0-255 범위의 정수로 변환
+        uint r_int = uint(pixel.r * 255.0f);
+
+        // 올바른 8비트 마스크(0xFE)를 사용하여 LSB 수정
+        r_int = (r_int & 0xFE) | bit; // 'u' 접미사로 unsigned 명시
+
+        // 다시 0.0-1.0 범위의 float로 변환
+        pixel.r = float(r_int) / 255.0f;
+    }
+    
     Result[id.xy] = pixel;
 }

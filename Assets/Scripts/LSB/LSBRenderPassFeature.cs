@@ -16,8 +16,8 @@ public class LSBRenderFeature : ScriptableRendererFeature
         RTHandle sourceHandle;
         RTHandle resultHandle;
 
-        ComputeBuffer bitstreamBuffer;
-        List<uint> bitstreamData;
+        ComputeBuffer bitBuffer;
+        List<uint> bitData;
 
         string profilerTag = "LSB Watermark Pass";
 
@@ -28,12 +28,26 @@ public class LSBRenderFeature : ScriptableRendererFeature
             this.profilerTag = profilerTag;
             embed = doEmbed ? 1 : 0;
         }
+        private void SetBitdata()
+        {
+            int pixelCount = Screen.width * Screen.height;
+
+            if (bitData != null && bitData.Count == pixelCount)
+                return;
+
+            bitData = OriginBlock.GetBitstream();
+
+            bitBuffer?.Release();
+            bitBuffer = new ComputeBuffer(bitData.Count, sizeof(uint));
+
+            computeShader.SetBuffer(kernelID, "Bitstream", bitBuffer);
+            computeShader.SetInt("BitLength", bitBuffer.count);
+        }
 
         public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
         {
             var desc = renderingData.cameraData.cameraTargetDescriptor;
 
-            //desc.graphicsFormat = GraphicsFormat.R8G8B8A8_UInt;
             desc.colorFormat = RenderTextureFormat.ARGB32;
             desc.depthBufferBits = 0;
             desc.enableRandomWrite = true;
@@ -54,8 +68,8 @@ public class LSBRenderFeature : ScriptableRendererFeature
             computeShader.SetInt("Width", desc.width);
             computeShader.SetInt("Height", desc.height);
             computeShader.SetInt("Embed", embed);
-            //computeShader.SetBuffer(kernelID, "Bitstream", bitstreamBuffer);
-            //computeShader.SetInt("BitLength", bitstreamBuffer.count);
+            
+            SetBitdata();
         }
 
         public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
@@ -68,10 +82,15 @@ public class LSBRenderFeature : ScriptableRendererFeature
             int threadGroupsX = Mathf.CeilToInt(width / 8f);
             int threadGroupsY = Mathf.CeilToInt(height / 8f);
 
-            //computeShader.Dispatch(kernelID, threadGroupsX, threadGroupsY, 1);
+            computeShader.Dispatch(kernelID, threadGroupsX, threadGroupsY, 1);
 
             // 결과를 다시 카메라 컬러 타겟에 적용
-            //cmd.Blit(resultHandle, renderingData.cameraData.renderer.cameraColorTargetHandle);
+
+            Debug.Log("현재 Color Format: " + renderingData.cameraData.cameraTargetDescriptor.colorFormat);
+
+            cmd.Blit(resultHandle, renderingData.cameraData.renderer.cameraColorTargetHandle);
+            //cmd.CopyTexture(resultHandle,0,0, renderingData.cameraData.renderer.cameraColorTargetHandle,0,0);
+            //Blitter.BlitCameraTexture(cmd, resultHandle, renderingData.cameraData.renderer.cameraColorTargetHandle);
 
             context.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);
@@ -85,10 +104,12 @@ public class LSBRenderFeature : ScriptableRendererFeature
     }
 
     public ComputeShader computeShader;
+
     public bool embedWatermark = true;
+
     [SerializeField] private string profilerTag = "LSB Watermark Pass";
 
-    LSBRenderPass pass;
+    private LSBRenderPass pass;
 
     public override void Create()
     {

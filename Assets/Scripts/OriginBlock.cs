@@ -181,9 +181,11 @@ public class OriginBlock
         
         while(bits.Count < targetBitLength)
         {
-            Debug.LogError("❌ OriginBlock 비트스트림 길이 부족: " + bits.Count + " < " + targetBitLength);
+            //Debug.LogError("OriginBlock 비트스트림 길이 부족: " + bits.Count + " < " + targetBitLength +
+            //   "(너비: " + Screen.width + ", 높이: " + Screen.height + ")");
+
             bits.AddRange(bits);
-            Debug.LogError("❌ OriginBlock 비트스트림 길이 증량, 현재 비트스트림 길이 " + bits.Count);
+            // Debug.LogError("OriginBlock 비트스트림 길이 증량, 현재 비트스트림 길이 " + bits.Count);
         }
 
         bits = bits.Take(targetBitLength).ToList(); // 딱 맞게 자름

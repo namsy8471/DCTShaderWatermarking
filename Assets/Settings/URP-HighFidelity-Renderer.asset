@@ -28,7 +28,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ca569e336a0fadf4589fa197a066459a, type: 3}
   m_Name: LSBRenderFeature
   m_EditorClassIdentifier: 
-  m_Active: 1
+  m_Active: 0
   computeShader: {fileID: 7200000, guid: 786ed288fc52e5d4489fcaf148b2a88c, type: 3}
   embedWatermark: 1
   profilerTag: LSB Watermark Pass
