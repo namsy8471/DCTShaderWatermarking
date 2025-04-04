@@ -138,6 +138,7 @@ public class TriangleRenderFeature : ScriptableRendererFeature
     public override void Create()
     {
         //이미 renderPass가 있다면 Dispose()를 호출하여 확실하게 해제.
+
         renderPass?.Dispose();
 
         interval = 1.0f - displayDuration;

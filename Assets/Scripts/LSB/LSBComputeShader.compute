@@ -13,33 +13,29 @@ uint Embed;
 [numthreads(8, 8, 1)]
 void LSBComputeShader(uint3 id : SV_DispatchThreadID)
 {
+    // 1. 텍스처 범위 검사 최우선 수행
+    if (id.x >= Width || id.y >= Height)
+    {
+        return; // 텍스처 범위 벗어나면 종료
+    }
+
+    // 2. 항상 원본 픽셀 로드
+    float4 pixel = Source.Load(int3(id.xy, 0));
+
+    // 3. LSB 수정을 위한 인덱스 계산
     uint index = id.y * Width + id.x;
-    if (id.x >= Width || id.y >= Height || index >= BitLength)
-        return;
 
-    //uint4 pixel = Source.Load(int3(id.xy, 0));
-
-    //if (Embed == 1)
-    //{
-    //    uint bit = Bitstream[index];
-    //    pixel.r = (pixel.r & 0xFFFFFFFE) | bit;
-    //}
-    
-    float4 pixel = Source.Load(int3(id.xy, 0)); // float4로 로드
-
-    if (Embed == 1)
+    // 4. LSB 수정 *조건부* 적용
+    // Embed 플래그가 1이고, index가 Bitstream 범위 내일 경우에만
+    if (Embed == 1 && index < BitLength)
     {
         uint bit = Bitstream[index];
-
-        // Red 채널을 0-255 범위의 정수로 변환
-        uint r_int = uint(pixel.r * 255.0f);
-
-        // 올바른 8비트 마스크(0xFE)를 사용하여 LSB 수정
-        r_int = (r_int & 0xFE) | bit; // 'u' 접미사로 unsigned 명시
-
-        // 다시 0.0-1.0 범위의 float로 변환
+        uint r_int = uint(saturate(pixel.r) * 255.0f);
+        r_int = (r_int & 0xFE) | bit;
         pixel.r = float(r_int) / 255.0f;
     }
-    
+    // Embed가 0이거나 index가 범위를 벗어나면 'pixel'은 원본 값 유지
+
+    // 5. 모든 유효 픽셀에 대해 *항상* 결과 쓰기
     Result[id.xy] = pixel;
 }

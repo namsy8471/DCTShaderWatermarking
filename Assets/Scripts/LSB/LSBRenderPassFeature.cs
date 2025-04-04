@@ -1,8 +1,5 @@
 ﻿using System.Collections.Generic;
-using System.IO;
-using UnityEditor.Hardware;
 using UnityEngine;
-using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 
@@ -13,7 +10,6 @@ public class LSBRenderFeature : ScriptableRendererFeature
         ComputeShader computeShader;
         int embed;
         int kernelID;
-        RTHandle sourceHandle;
         RTHandle resultHandle;
 
         ComputeBuffer bitBuffer;
@@ -28,14 +24,14 @@ public class LSBRenderFeature : ScriptableRendererFeature
             this.profilerTag = profilerTag;
             embed = doEmbed ? 1 : 0;
         }
-        private void SetBitdata()
+        private async void SetBitdata()
         {
             int pixelCount = Screen.width * Screen.height;
 
             if (bitData != null && bitData.Count == pixelCount)
                 return;
 
-            bitData = OriginBlock.GetBitstream();
+            bitData = await OriginBlock.GetBitstreamRuntimeAsync("OriginBlockData");
 
             bitBuffer?.Release();
             bitBuffer = new ComputeBuffer(bitData.Count, sizeof(uint));
@@ -46,23 +42,19 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
         public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
         {
-            var desc = renderingData.cameraData.cameraTargetDescriptor;
-
+            var desc = renderingData.cameraData.cameraTargetDescriptor; ;
             desc.colorFormat = RenderTextureFormat.ARGB32;
             desc.depthBufferBits = 0;
             desc.enableRandomWrite = true;
             desc.msaaSamples = 1; // ComputeShader에서는 MSAA 지원 안 함
-            desc.sRGB = false;
+            //desc.sRGB = false;
 
             resultHandle?.Release();
-            sourceHandle?.Release();
 
             resultHandle = RTHandles.Alloc(desc, name: "_LSB_Result");
-            sourceHandle = RTHandles.Alloc(desc, name: "_LSB_Source");
 
             computeShader.SetTexture(kernelID, "Result", resultHandle);
-
-            var source = renderingData.cameraData.renderer.cameraColorTargetHandle;
+            var source = renderingData.cameraData.renderer.cameraColorTargetHandle.rt;
             computeShader.SetTexture(kernelID, "Source", source); // RTHandle
 
             computeShader.SetInt("Width", desc.width);
@@ -86,8 +78,8 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
             // 결과를 다시 카메라 컬러 타겟에 적용
 
-            Debug.Log("현재 Color Format: " + renderingData.cameraData.cameraTargetDescriptor.colorFormat);
-
+            //Debug.Log("현재 Color Format: " + renderingData.cameraData.cameraTargetDescriptor.colorFormat);
+            
             cmd.Blit(resultHandle, renderingData.cameraData.renderer.cameraColorTargetHandle);
             //cmd.CopyTexture(resultHandle,0,0, renderingData.cameraData.renderer.cameraColorTargetHandle,0,0);
             //Blitter.BlitCameraTexture(cmd, resultHandle, renderingData.cameraData.renderer.cameraColorTargetHandle);
@@ -98,8 +90,13 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
         public override void OnCameraCleanup(CommandBuffer cmd)
         {
-            if (sourceHandle != null) RTHandles.Release(sourceHandle);
             if (resultHandle != null) RTHandles.Release(resultHandle);
+        }
+
+        // Feature 비활성화 시 호출될 수 있도록 추가
+        public void Cleanup()
+        {
+            RTHandles.Release(resultHandle);
         }
     }
 
@@ -113,7 +110,6 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
     public override void Create()
     {
-        OriginBlock.GenerateAndSave();
 
         pass = new LSBRenderPass(computeShader, profilerTag, embedWatermark)
         {
@@ -125,5 +121,10 @@ public class LSBRenderFeature : ScriptableRendererFeature
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
         renderer.EnqueuePass(pass);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        pass?.Cleanup();
     }
 }
