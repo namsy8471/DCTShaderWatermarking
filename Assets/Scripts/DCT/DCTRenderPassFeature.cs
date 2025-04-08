@@ -97,9 +97,10 @@ public class DCTRenderFeature : ScriptableRendererFeature
             embedActive = isActive;
         }
 
-        private async void SetBitstreamData(CommandBuffer cmd)
+        private void SetBitstreamData(CommandBuffer cmd)
         {
-            List<uint> bitstreamData = await OriginBlock.GetBitstreamRuntimeAsync("OriginBlockData");
+            List<uint> bitstreamData = OriginBlock.ConstructPayloadWithHeader(
+                OriginBlock.LoadEncryptedDataBytesSync("OriginBlockData"));
 
             if (bitstreamData == null || bitstreamData.Count == 0)
             {
@@ -181,6 +182,7 @@ public class DCTRenderFeature : ScriptableRendererFeature
             RenderingUtils.ReAllocateIfNeeded(ref idctOutputHandle, idctDesc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_IDCTOutput"); // <<< IDCT 핸들 할당
 
             SetBitstreamData(cmd); // 비트스트림 설정 호출
+
 
             if (dctKernelID >= 0)
             {

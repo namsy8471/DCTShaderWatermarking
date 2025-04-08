@@ -24,14 +24,15 @@ public class LSBRenderFeature : ScriptableRendererFeature
             this.profilerTag = profilerTag;
             embed = doEmbed ? 1 : 0;
         }
-        private async void SetBitdata()
+        private void SetBitdata()
         {
             int pixelCount = Screen.width * Screen.height;
 
             if (bitData != null && bitData.Count == pixelCount)
                 return;
 
-            bitData = await OriginBlock.GetBitstreamRuntimeAsync("OriginBlockData");
+            bitData = OriginBlock.ConstructPayloadWithHeader(
+                OriginBlock.LoadEncryptedDataBytesSync("OriginBlockData"));
 
             bitBuffer?.Release();
             bitBuffer = new ComputeBuffer(bitData.Count, sizeof(uint));
@@ -101,7 +102,6 @@ public class LSBRenderFeature : ScriptableRendererFeature
     }
 
     public ComputeShader computeShader;
-
     public bool embedWatermark = true;
 
     [SerializeField] private string profilerTag = "LSB Watermark Pass";
