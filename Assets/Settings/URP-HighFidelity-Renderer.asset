@@ -1,5 +1,21 @@
 %YAML 1.1
 %TAG !u! tag:unity3d.com,2011:
+--- !u!114 &-9011381159908791362
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 118da7909a36c7648b60d13550f6d087, type: 3}
+  m_Name: LSBRenderFeature
+  m_EditorClassIdentifier: 
+  m_Active: 0
+  lsbComputeShader: {fileID: 7200000, guid: 2691d7ee8c623fc439873daa7cff5aac, type: 3}
+  embedBitstream: 1
+  addressableKey: OriginBlockData
 --- !u!114 &-6575308690640035461
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -62,21 +78,8 @@ MonoBehaviour:
   m_Active: 1
   dctComputeShader: {fileID: 7200000, guid: cbfaad5dcbaf5614595a14f8c0cfcff7, type: 3}
   embedBitstream: 1
---- !u!114 &-2207677570683648364
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 0}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: ed831b7424f65b34da6487188826cd56, type: 3}
-  m_Name: DCTRenderFeature
-  m_EditorClassIdentifier: 
-  m_Active: 0
-  dctComputeShader: {fileID: 7200000, guid: 881814d9824167746a73e702370c0b20, type: 3}
-  embedBitstream: 1
+  qimDelta: 5
+  addressableKey: OriginBlockData
 --- !u!114 &-1878332245247344467
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -145,10 +148,9 @@ MonoBehaviour:
   m_RendererFeatures:
   - {fileID: -1878332245247344467}
   - {fileID: 6690638146467207930}
-  - {fileID: -6172274661494896331}
-  - {fileID: -2207677570683648364}
+  - {fileID: -9011381159908791362}
   - {fileID: -2744157322982174075}
-  m_RendererFeatureMap: adc0de57c6d2eee5fa1adb18f2ebd95c35c973c1e5ac57aa94c6cd3cf2c05ce18552dc3374cbead9
+  m_RendererFeatureMap: adc0de57c6d2eee5fa1adb18f2ebd95cbe2bfd539424f1828552dc3374cbead9
   m_UseNativeRenderPass: 0
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
   xrSystemData: {fileID: 11400000, guid: 60e1133243b97e347b653163a8c01b64, type: 2}

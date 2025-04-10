@@ -1,305 +1,318 @@
-using UnityEngine;
+ï»¿using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using System.Collections.Generic;
-using System.IO; // Path »ç¿ë À§ÇØ Ãß°¡
-using System.Threading.Tasks; // Task »ç¿ë À§ÇØ Ãß°¡ (¼±ÅÃÀû)
+using System.Linq;
+using System; // Math.Min ì‚¬ìš©
+
+// OriginBlock í´ë˜ìŠ¤ê°€ ë™ì¼ í”„ë¡œì íŠ¸ ë‚´ì— ì •ì˜ë˜ì–´ ìˆë‹¤ê³  ê°€ì •
 
 public class DCTRenderFeature_Optimized : ScriptableRendererFeature
 {
-    [Header("¼ÎÀÌ´õ ¹× ¼³Á¤")]
-    public ComputeShader dctComputeShader; // Inspector¿¡¼­ ÇÒ´ç (ÃÖÀûÈ­µÈ .compute ÆÄÀÏ)
-
-    [Tooltip("DCT °è¼ö¿¡ OriginBlock ºñÆ®½ºÆ®¸²À» ÀÓº£µùÇÒÁö ¿©ºÎ")]
+    [Header("ì…°ì´ë” ë° ì„¤ì •")]
+    public ComputeShader dctComputeShader; // DCTìš© ìµœì í™”ëœ .compute íŒŒì¼ í• ë‹¹
+    [Tooltip("DCT ê³„ìˆ˜ì— ë¹„íŠ¸ìŠ¤íŠ¸ë¦¼ì„ ì„ë² ë”©í• ì§€ ì—¬ë¶€")]
     public bool embedBitstream = true;
+    [Tooltip("QIM ìŠ¤í… í¬ê¸°")]
+    public float qimDelta = 10.0f;
+    [Tooltip("Addressablesì—ì„œ ë¡œë“œí•  ì•”í˜¸í™”ëœ ë°ì´í„° í‚¤")]
+    public string addressableKey = "OriginBlockData";
 
     private DCTRenderPass_Optimized dctRenderPass;
-    private List<uint> cachedBitstreamData = null; // ºñÆ®½ºÆ®¸² µ¥ÀÌÅÍ Ä³½Ã
-    private bool bitstreamLoaded = false;
+
 
     public override void Create()
     {
-        if (dctComputeShader == null)
-        {
-            Debug.LogError("Optimized DCT Compute Shader°¡ ÇÒ´çµÇÁö ¾Ê¾Ò½À´Ï´Ù.");
-            return;
-        }
+        if (dctComputeShader == null) { /* ì˜¤ë¥˜ ì²˜ë¦¬ */ return; }
 
-        // --- Bitstream µ¥ÀÌÅÍ ·Îµù (µ¿±â ¶Ç´Â ºñµ¿±â ÈÄ Ä³½Ì) ---
-        // ¿¹½Ã: µ¿±â ·Îµù (OriginBlock.GetBitstreamRuntimeSync °¡ ÀÖ´Ù°í °¡Á¤)
-        // ¶Ç´Â ¾Û ½ÃÀÛ ½Ã ´Ù¸¥ °÷¿¡¼­ ·Îµå ÈÄ ¿©±â¿¡ Àü´Ş
-        try
-        {
-            // Áß¿ä: ½ÇÁ¦ ÇÁ·ÎÁ§Æ®¿¡¼­´Â OriginBlock.GetBitstreamRuntimeAsync¸¦ È£ÃâÇÏ°í
-            // await ÇÏ°Å³ª, Äİ¹é ¶Ç´Â ´Ù¸¥ µ¿±âÈ­ ¸ŞÄ¿´ÏÁòÀ» »ç¿ëÇØ¾ß ÇÕ´Ï´Ù.
-            // ¿©±â¼­´Â °£´ÜÇÏ°Ô µ¿±â ¸Ş¼­µå È£Ãâ ¶Ç´Â Á÷Á¢ µ¥ÀÌÅÍ »ı¼ºÀ» °¡Á¤ÇÕ´Ï´Ù.
-
-            // --- ¿¹½Ã 1: µ¿±â ¸Ş¼­µå°¡ ÀÖ´Ù°í °¡Á¤ ---
-            cachedBitstreamData = OriginBlock.GetBitstreamRuntimeSync("OriginBlockData");
-
-            // --- ¿¹½Ã 2: ÀÓ½Ã µ¥ÀÌÅÍ »ı¼º (Å×½ºÆ®¿ë) ---
-            // cachedBitstreamData = GenerateTempBitstream(256 * 144); // ¿¹: 2048x1152 / 8x8 = 256 * 144 ºí·Ï
-
-            bitstreamLoaded = (cachedBitstreamData != null && cachedBitstreamData.Count > 0);
-            if (!bitstreamLoaded)
-            {
-                Debug.LogWarning("OriginBlock ºñÆ®½ºÆ®¸² µ¥ÀÌÅÍ¸¦ ·ÎµåÇÏÁö ¸øÇß°Å³ª µ¥ÀÌÅÍ°¡ ¾ø½À´Ï´Ù.");
-            }
-            else
-            {
-                Debug.Log($"Bitstream µ¥ÀÌÅÍ ·Îµå ¿Ï·á: {cachedBitstreamData.Count} bits");
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Debug.LogError($"ºñÆ®½ºÆ®¸² µ¥ÀÌÅÍ ·Îµù Áß ¿À·ù ¹ß»ı: {ex.Message}");
-            cachedBitstreamData = null;
-            bitstreamLoaded = false;
-        }
-        // --- ·Îµù ³¡ ---
-
-
-        dctRenderPass = new DCTRenderPass_Optimized(dctComputeShader, name, embedBitstream, cachedBitstreamData);
+        dctRenderPass = new DCTRenderPass_Optimized(dctComputeShader, name, embedBitstream, qimDelta);
         dctRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
     }
 
-
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
-        if (dctComputeShader != null && dctRenderPass != null)
+        if (dctComputeShader != null && dctRenderPass != null )
         {
-            // Pass ½ÇÇà Àü¿¡ ÃÖ½Å embedBitstream ¼³Á¤ Àü´Ş
-            dctRenderPass.SetEmbedActive(embedBitstream && bitstreamLoaded); // µ¥ÀÌÅÍ ·Îµå ½ÇÆĞ ½Ã ºñÈ°¼ºÈ­
-            renderer.EnqueuePass(dctRenderPass);
+            dctRenderPass.SetEmbedActive(embedBitstream);
+            if(DataManager.IsDataReady)
+            {
+                renderer.EnqueuePass(dctRenderPass);
+            }
         }
     }
 
-    protected override void Dispose(bool disposing)
-    {
-        dctRenderPass?.Cleanup();
-    }
+    protected override void Dispose(bool disposing) { dctRenderPass?.Cleanup(); }
 
-    // --- DCTRenderPass ³»ºÎ Å¬·¡½º (ÃÖÀûÈ­ ¹öÀü) ---
+
+    // --- DCTRenderPass ë‚´ë¶€ í´ë˜ìŠ¤ (ìµœì í™” ë²„ì „) ---
     class DCTRenderPass_Optimized : ScriptableRenderPass
     {
         private ComputeShader computeShader;
-        private int dctPass1KernelID; // DCT Rows
-        private int dctPass2KernelID; // DCT Cols + Embed
-        private int idctPass1KernelID; // IDCT Cols
-        private int idctPass2KernelID; // IDCT Rows
-
-        private RTHandle sourceTextureHandle;    // ¿øº» º¹»çº»
-        private RTHandle intermediateHandle;     // Áß°£ °á°ú (DCT 1´Ü°è Ãâ·Â, DCT 2´Ü°è ÀÔ·Â / IDCT 1´Ü°è Ãâ·Â, IDCT 2´Ü°è ÀÔ·Â)
-        private RTHandle dctOutputHandle;        // ÃÖÁ¾ DCT °è¼ö (DCT 2´Ü°è Ãâ·Â, IDCT 1´Ü°è ÀÔ·Â)
-        private RTHandle idctOutputHandle;       // ÃÖÁ¾ º¹¿ø ÀÌ¹ÌÁö (IDCT 2´Ü°è Ãâ·Â)
-
+        private int dctPass1KernelID, dctPass2KernelID, idctPass1KernelID, idctPass2KernelID;
+        private RTHandle sourceTextureHandle, intermediateHandle, dctOutputHandle, idctOutputHandle;
         private string profilerTag;
         private bool embedActive;
-
-        // Bitstream °ü·Ã
         private ComputeBuffer bitstreamBuffer;
-        private List<uint> initialBitstreamData; // Create¿¡¼­ Àü´Ş¹ŞÀº Ä³½ÃµÈ µ¥ÀÌÅÍ
+        private Material overlayMaterial;
 
-        private const int BLOCK_SIZE = 8;
+        private List<uint> payloadBits; // í—¤ë” í¬í•¨, íŒ¨ë”© ì „ ì›ë³¸ í˜ì´ë¡œë“œ
+        private List<uint> finalBitsToEmbed; // ìµœì¢… ì‚½ì…ë  ë¹„íŠ¸ (íŒ¨ë”© ì™„ë£Œ)
 
-        public DCTRenderPass_Optimized(ComputeShader shader, string tag, bool initialEmbedState, List<uint> bitstreamData)
+        private float qimDelta; // QIM ìŠ¤í… í¬ê¸° (ì…°ì´ë”ì—ì„œ ì‚¬ìš©ë¨)
+        private const int BLOCK_SIZE = 8; // DCT ë¸”ë¡ í¬ê¸°
+
+        public DCTRenderPass_Optimized(ComputeShader shader, string tag, bool initialEmbedState, float qimDelta)
         {
-            computeShader = shader;
-            profilerTag = tag;
-            embedActive = initialEmbedState;
-            initialBitstreamData = bitstreamData; // Ä³½ÃµÈ µ¥ÀÌÅÍ ÀúÀå
+            computeShader = shader; profilerTag = tag; embedActive = initialEmbedState;
 
-            dctPass1KernelID = computeShader.FindKernel("DCT_Pass1_Rows");
-            dctPass2KernelID = computeShader.FindKernel("DCT_Pass2_Cols");
-            idctPass1KernelID = computeShader.FindKernel("IDCT_Pass1_Cols");
-            idctPass2KernelID = computeShader.FindKernel("IDCT_Pass2_Rows");
+            dctPass1KernelID = shader.FindKernel("DCT_Pass1_Rows");
+            dctPass2KernelID = shader.FindKernel("DCT_Pass2_Cols");
+            idctPass1KernelID = shader.FindKernel("IDCT_Pass1_Cols");
+            idctPass2KernelID = shader.FindKernel("IDCT_Pass2_Rows");
 
-            if (dctPass1KernelID < 0) Debug.LogError("Kernel DCT_Pass1_Rows ¸¦ Ã£À» ¼ö ¾ø½À´Ï´Ù.");
-            if (dctPass2KernelID < 0) Debug.LogError("Kernel DCT_Pass2_Cols ¸¦ Ã£À» ¼ö ¾ø½À´Ï´Ù.");
-            if (idctPass1KernelID < 0) Debug.LogError("Kernel IDCT_Pass1_Cols ¸¦ Ã£À» ¼ö ¾ø½À´Ï´Ù.");
-            if (idctPass2KernelID < 0) Debug.LogError("Kernel IDCT_Pass2_Rows ¸¦ Ã£À» ¼ö ¾ø½À´Ï´Ù.");
+            this.qimDelta = qimDelta; // QIM ìŠ¤í… í¬ê¸°
+            payloadBits = new List<uint>();
+            finalBitsToEmbed = new List<uint>();
 
-            // ÃÊ±â Bitstream ¹öÆÛ »ı¼º (µ¥ÀÌÅÍ°¡ ÀÖ´Ù¸é)
-            UpdateBitstreamBuffer(initialBitstreamData);
+            overlayMaterial = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/BlitOverlay"));
         }
 
-        public void SetEmbedActive(bool isActive)
-        {
-            embedActive = isActive;
-        }
+        public void SetEmbedActive(bool isActive) { embedActive = isActive; }
 
-        // ComputeBuffer »ı¼º/°»½Å ·ÎÁ÷
+        // UpdateBitstreamBuffer í•¨ìˆ˜ëŠ” LSBRenderPassì™€ ë™ì¼í•˜ê²Œ ì‚¬ìš©
         private void UpdateBitstreamBuffer(List<uint> data)
-        {
+        { /* ... LSBRenderPassì™€ ë™ì¼ ... */
             int count = (data != null) ? data.Count : 0;
-
-            if (count == 0)
-            {
-                bitstreamBuffer?.Release();
-                bitstreamBuffer = null;
-                // Debug.Log("Bitstream µ¥ÀÌÅÍ°¡ ¾ø¾î ComputeBuffer ÇØÁ¦µÊ.");
-                return;
+            if (count == 0) 
+            { 
+                if (bitstreamBuffer != null) 
+                { 
+                    bitstreamBuffer.Release(); 
+                    bitstreamBuffer = null;
+                } 
+                return; 
             }
-
-            // ¹öÆÛ°¡ ¾ø°Å³ª, Å©±â°¡ ´Ù¸£°Å³ª, À¯È¿ÇÏÁö ¾ÊÀ¸¸é »õ·Î »ı¼º
             if (bitstreamBuffer == null || bitstreamBuffer.count != count || !bitstreamBuffer.IsValid())
             {
                 bitstreamBuffer?.Release();
-                bitstreamBuffer = new ComputeBuffer(count, sizeof(uint), ComputeBufferType.Structured);
-                Debug.Log($"Bitstream ComputeBuffer »ı¼º/°»½Å: Count={count}");
+                try 
+                { 
+                    bitstreamBuffer = new ComputeBuffer(count, sizeof(uint), ComputeBufferType.Structured); 
+                }
+                catch (Exception ex) 
+                { 
+                    Debug.LogError($"[DCTRenderPass] ComputeBuffer ìƒì„± ì‹¤íŒ¨: {ex.Message}");
+                    bitstreamBuffer = null;
+                    return;
+                }
             }
 
-            // µ¥ÀÌÅÍ ¼³Á¤
-            try
+            try 
             {
                 bitstreamBuffer.SetData(data);
             }
-            catch (System.Exception ex)
-            {
-                Debug.LogError($"Bitstream ComputeBuffer µ¥ÀÌÅÍ ¼³Á¤ ¿À·ù: {ex.Message}");
-                bitstreamBuffer?.Release();
-                bitstreamBuffer = null;
+            catch (Exception ex) 
+            { 
+                Debug.LogError($"[DCTRenderPass] ComputeBuffer SetData ì˜¤ë¥˜: {ex.Message}"); 
+                bitstreamBuffer?.Release(); 
+                bitstreamBuffer = null; 
             }
         }
 
 
+        // DCTRenderPass_Optimized í´ë˜ìŠ¤ ë‚´ë¶€
+
         public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
         {
-            var cameraTargetDescriptor = renderingData.cameraData.cameraTargetDescriptor;
-            cameraTargetDescriptor.depthBufferBits = 0;
-            cameraTargetDescriptor.msaaSamples = 1; // MSAA ºñÈ°¼ºÈ­
+            var desc = renderingData.cameraData.cameraTargetDescriptor;
+            desc.depthBufferBits = 0; desc.msaaSamples = 1;
 
-            // 1. Source Copy ¿ë ÇÚµé
-            var sourceDesc = cameraTargetDescriptor;
-            // sourceDesc.enableRandomWrite = false; // ÀĞ±â¸¸ ÇÔ
-            RenderingUtils.ReAllocateIfNeeded(ref sourceTextureHandle, sourceDesc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_SourceCopyForDCT");
+            // RTHandle í• ë‹¹ (ê¸°ì¡´ê³¼ ë™ì¼)
+            var intermediateDesc = desc; intermediateDesc.colorFormat = RenderTextureFormat.RFloat; intermediateDesc.sRGB = false; intermediateDesc.enableRandomWrite = true;
+            var idctDesc = desc; idctDesc.enableRandomWrite = true;
+            RenderingUtils.ReAllocateIfNeeded(ref sourceTextureHandle, desc, FilterMode.Point, name: "_SourceCopyForDCT");
+            RenderingUtils.ReAllocateIfNeeded(ref intermediateHandle, intermediateDesc, FilterMode.Point, name: "_IntermediateDCT_IDCT");
+            RenderingUtils.ReAllocateIfNeeded(ref dctOutputHandle, intermediateDesc, FilterMode.Point, name: "_DCTOutput");
+            RenderingUtils.ReAllocateIfNeeded(ref idctOutputHandle, idctDesc, FilterMode.Point, name: "_IDCTOutput");
 
-            // 2. Intermediate Buffer ÇÚµé (RFloat ¶Ç´Â RHalf)
-            var intermediateDesc = cameraTargetDescriptor;
-            intermediateDesc.colorFormat = RenderTextureFormat.RFloat; // ¶Ç´Â RHalf
-            intermediateDesc.sRGB = false;
-            intermediateDesc.enableRandomWrite = true;
-            RenderingUtils.ReAllocateIfNeeded(ref intermediateHandle, intermediateDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "_IntermediateDCT_IDCT");
+            // --- ë¹„íŠ¸ìŠ¤íŠ¸ë¦¼ ì¤€ë¹„ (ë¹„ë™ê¸° ë¡œë”© í™•ì¸ ë° íƒ€ì¼ë§ íŒ¨ë”© ì ìš©) ---
 
-            // 3. DCT Output ÇÚµé (RFloat ¶Ç´Â RHalf)
-            var dctDesc = intermediateDesc; // Intermediate¿Í µ¿ÀÏ Æ÷¸Ë »ç¿ë
-            RenderingUtils.ReAllocateIfNeeded(ref dctOutputHandle, dctDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "_DCTOutput");
+            // ìµœì¢… ì‚½ì…ë  ë¹„íŠ¸ ë¦¬ìŠ¤íŠ¸ ì´ˆê¸°í™”
+            finalBitsToEmbed = finalBitsToEmbed ?? new List<uint>(); // Nullì´ë©´ ìƒˆë¡œ ìƒì„±
+            finalBitsToEmbed.Clear();
 
-            // 4. IDCT Output ÇÚµé (ÃÖÁ¾ °á°ú, Ä«¸Ş¶ó Å¸°Ù°ú À¯»ç)
-            var idctDesc = cameraTargetDescriptor;
-            idctDesc.enableRandomWrite = true; // IDCT Pass 2°¡ ¾²±â¿ë
-            // idctDesc.colorFormat = RenderTextureFormat.ARGB32; // ÇÊ¿ä½Ã ¸í½Ã
-            RenderingUtils.ReAllocateIfNeeded(ref idctOutputHandle, idctDesc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_IDCTOutput");
+            // embedActive í”Œë˜ê·¸ê°€ í™œì„±í™” ë˜ì–´ ìˆê³ , DataManagerë¥¼ í†µí•´ ë°ì´í„° ë¡œë”©ì´ ì™„ë£Œë˜ì—ˆëŠ”ì§€ í™•ì¸
+            // <<< ë³€ê²½/ì¶”ê°€ëœ ë¶€ë¶„ ì‹œì‘ >>>
+            if (embedActive && DataManager.IsDataReady && DataManager.EncryptedOriginData != null)
+            {
+                // ë°ì´í„°ê°€ ì¤€ë¹„ë˜ì—ˆìœ¼ë¯€ë¡œ í˜ì´ë¡œë“œ êµ¬ì„± ë° íŒ¨ë”© ì‹œë„
+                try
+                {
+                    finalBitsToEmbed = payloadBits;
+                    // ì´ˆê¸°í™” ë° ë³µì‚¬
+                    // 1. í—¤ë” í¬í•¨ í˜ì´ë¡œë“œ êµ¬ì„± (OriginBlock í´ë˜ìŠ¤ í•¨ìˆ˜ í˜¸ì¶œ)
+                    // payloadBitsëŠ” ìƒì„±ì ë“±ì—ì„œ ë¯¸ë¦¬ êµ¬ì„±í•´ ë‘ì—ˆê±°ë‚˜ ì—¬ê¸°ì„œ í˜¸ì¶œ
+                    // ì—¬ê¸°ì„œëŠ” ìƒì„±ìì—ì„œ payloadBitsë¥¼ êµ¬ì„±í–ˆë‹¤ê³  ê°€ì •
+                    if (payloadBits == null || payloadBits.Count == 0)
+                    {
+                        payloadBits = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
+                        finalBitsToEmbed = payloadBits;
+                        // ë§Œì•½ ìƒì„±ìì—ì„œ ë¡œë”© ì‹¤íŒ¨ ë“±ìœ¼ë¡œ payloadBitsê°€ ì¤€ë¹„ ì•ˆëë‹¤ë©´ ì—¬ê¸°ì„œ ì¬ì‹œë„ ë˜ëŠ” ì˜¤ë¥˜ ì²˜ë¦¬
+                        // ì˜ˆì‹œ: payloadBits = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
+                        // ì•„ë˜ëŠ” payloadBitsê°€ ìœ íš¨í•˜ë‹¤ê³  ê°€ì •í•˜ê³  ì§„í–‰
+                        if (payloadBits == null || payloadBits.Count == 0)
+                        {
+                            finalBitsToEmbed = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
+                            Debug.LogError("[DCTRenderPass] í˜ì´ë¡œë“œ ë¹„íŠ¸ê°€ ì¤€ë¹„ë˜ì§€ ì•Šì•˜ìŠµë‹ˆë‹¤.");
+                            throw new InvalidOperationException("Payload bits are not ready.");
+                        }
+                    }
 
-            // --- ¼ÎÀÌ´õ ÆÄ¶ó¹ÌÅÍ ¼³Á¤ ---
-            int width = cameraTargetDescriptor.width;
-            int height = cameraTargetDescriptor.height;
+                    int width = desc.width;
+                    int height = desc.height;
+                    // DCT ìš©ëŸ‰ = ì´ ë¸”ë¡ ìˆ˜
+                    int numBlocksX = width / BLOCK_SIZE;
+                    int numBlocksY = height / BLOCK_SIZE;
+                    int availableCapacity = numBlocksX * numBlocksY;
+                    int totalPayloadLength = payloadBits.Count; // L = Sync+Len+Data ê¸¸ì´
 
-            // ¸ğµç Ä¿³Î¿¡ °øÅë ÆÄ¶ó¹ÌÅÍ ¼³Á¤
-            computeShader.SetInt("Width", width);
-            computeShader.SetInt("Height", height);
+                    if (availableCapacity == 0)
+                    {
+                        Debug.LogWarning("[DCTRenderPass] ì´ë¯¸ì§€ í¬ê¸°ê°€ ì‘ì•„ ë¸”ë¡ ìƒì„± ë¶ˆê°€.");
+                        // finalBitsToEmbedëŠ” ì´ë¯¸ ë¹„ì–´ìˆìŒ
+                    }
+                    else
+                    {
+                        // 2. ìê°€ ë³µì œ(íƒ€ì¼ë§) íŒ¨ë”© ìˆ˜í–‰
+                        finalBitsToEmbed.Capacity = availableCapacity;
+                        int currentPosition = 0;
+                        while (currentPosition < availableCapacity)
+                        {
+                            int remainingSpace = availableCapacity - currentPosition;
+                            int countToAdd = Math.Min(totalPayloadLength, remainingSpace);
+                            if (countToAdd <= 0 || totalPayloadLength == 0) break;
+                            finalBitsToEmbed.AddRange(payloadBits.GetRange(0, countToAdd));
+                            currentPosition += countToAdd;
+                        }
+                        // Debug.Log($"[DCTRenderPass] ìê°€ ë³µì œ íŒ¨ë”© ì™„ë£Œ. ìµœì¢… í¬ê¸°: {finalBitsToEmbed.Count} / ìš©ëŸ‰: {availableCapacity}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[{profilerTag}] í˜ì´ë¡œë“œ êµ¬ì„± ë˜ëŠ” íŒ¨ë”© ì¤‘ ì˜¤ë¥˜: {ex.Message}");
+                    finalBitsToEmbed.Clear(); // ì˜¤ë¥˜ ì‹œ ë¹„ì›€
+                }
+            }
+            // <<< ë³€ê²½/ì¶”ê°€ëœ ë¶€ë¶„ ë >>>
+            else
+            {
+                // ì„ë² ë”© ë¹„í™œì„±í™” ë˜ëŠ” ë°ì´í„° ë¯¸ì¤€ë¹„ ìƒíƒœ
+                // finalBitsToEmbedëŠ” ì´ë¯¸ ë¹„ì–´ìˆìŒ
+                if (!DataManager.IsDataReady && embedActive)
+                {
+                    Debug.LogWarning("[DCTRenderPass] ë°ì´í„° ë¯¸ì¤€ë¹„. ì„ë² ë”© ê±´ë„ˆ<0xEB><0x91>.");
+                }
+            }
 
-            // DCT Pass 1
+            // ìµœì¢… ë¹„íŠ¸ìŠ¤íŠ¸ë¦¼ìœ¼ë¡œ ComputeBuffer ì—…ë°ì´íŠ¸ (ë°ì´í„° ì—†ìœ¼ë©´ ë²„í¼ í•´ì œë¨)
+            UpdateBitstreamBuffer(finalBitsToEmbed);
+
+            // --- ì…°ì´ë” íŒŒë¼ë¯¸í„° ì„¤ì • ---
+            int currentBitLength = finalBitsToEmbed.Count;
+            bool bufferValid = bitstreamBuffer != null && bitstreamBuffer.IsValid() && bitstreamBuffer.count == currentBitLength;
+            // ìµœì¢… ì„ë² ë”© ì¡°ê±´ í™•ì¸
+            bool shouldEmbed = embedActive && DataManager.IsDataReady && bufferValid && currentBitLength > 0;
+            Debug.Log($"[DCTRenderPass] ìµœì¢… ë¹„íŠ¸ìŠ¤íŠ¸ë¦¼ ê¸¸ì´: {currentBitLength} / ìœ íš¨ì„±: {bufferValid}");
+
+            // ê³µí†µ íŒŒë¼ë¯¸í„° (ëª¨ë“  ì»¤ë„ì— ì„¤ì • í•„ìš”í•  ìˆ˜ ìˆìŒ - í™•ì¸ í•„ìš”)
+            computeShader.SetInt("Width", desc.width);
+            computeShader.SetInt("Height", desc.height);
+
+            // ê° ì»¤ë„ í…ìŠ¤ì²˜ ë°”ì¸ë”© (ê¸°ì¡´ê³¼ ë™ì¼)
             if (dctPass1KernelID >= 0)
             {
                 computeShader.SetTexture(dctPass1KernelID, "Source", sourceTextureHandle);
-                computeShader.SetTexture(dctPass1KernelID, "IntermediateBuffer", intermediateHandle); // Ãâ·Â
+                computeShader.SetTexture(dctPass1KernelID, "IntermediateBuffer", intermediateHandle);
             }
-            // DCT Pass 2
             if (dctPass2KernelID >= 0)
             {
-                computeShader.SetTexture(dctPass2KernelID, "IntermediateBuffer", intermediateHandle); // ÀÔ·Â
-                computeShader.SetTexture(dctPass2KernelID, "DCTOutput", dctOutputHandle);       // Ãâ·Â
-                // Bitstream ¼³Á¤
-                if (embedActive && bitstreamBuffer != null && bitstreamBuffer.IsValid())
+                computeShader.SetTexture(dctPass2KernelID, "IntermediateBuffer", intermediateHandle);
+                computeShader.SetTexture(dctPass2KernelID, "DCTOutput", dctOutputHandle);
+                cmd.SetComputeBufferParam(computeShader, dctPass2KernelID, "Bitstream", bitstreamBuffer);
+                cmd.SetComputeFloatParam(computeShader, "QIM_DELTA", qimDelta);
+                // Bitstream íŒŒë¼ë¯¸í„° (DCT Pass 2 ì»¤ë„ì—ë§Œ í•„ìš”)
+                if (shouldEmbed)
                 {
-                    cmd.SetComputeBufferParam(computeShader, dctPass2KernelID, "Bitstream", bitstreamBuffer);
-                    cmd.SetComputeIntParam(computeShader, "BitLength", bitstreamBuffer.count);
+                    Debug.Log($"[DCTRenderPass] shouldEmbed True!");
+
+                    cmd.SetComputeIntParam(computeShader, "BitLength", currentBitLength);
                     cmd.SetComputeIntParam(computeShader, "Embed", 1);
                 }
                 else
                 {
+                    Debug.Log($"[DCTRenderPass] shouldEmbed false!");
+
                     cmd.SetComputeIntParam(computeShader, "BitLength", 0);
                     cmd.SetComputeIntParam(computeShader, "Embed", 0);
                 }
             }
-            // IDCT Pass 1
+
             if (idctPass1KernelID >= 0)
             {
-                computeShader.SetTexture(idctPass1KernelID, "DCTOutput", dctOutputHandle);       // ÀÔ·Â
-                computeShader.SetTexture(idctPass1KernelID, "IntermediateBuffer", intermediateHandle); // Ãâ·Â (Àç»ç¿ë)
+                computeShader.SetTexture(idctPass1KernelID, "DCTOutput", dctOutputHandle);
+                computeShader.SetTexture(idctPass1KernelID, "IntermediateBuffer", intermediateHandle);
             }
-            // IDCT Pass 2
             if (idctPass2KernelID >= 0)
             {
-                computeShader.SetTexture(idctPass2KernelID, "IntermediateBuffer", intermediateHandle); // ÀÔ·Â (Àç»ç¿ë)
-                computeShader.SetTexture(idctPass2KernelID, "IDCTOutput", idctOutputHandle);       // ÃÖÁ¾ Ãâ·Â
+                computeShader.SetTexture(idctPass2KernelID, "IntermediateBuffer", intermediateHandle);
+                computeShader.SetTexture(idctPass2KernelID, "IDCTOutput", idctOutputHandle);
             }
+
+            overlayMaterial.SetTexture("_MainTex", idctOutputHandle);
+
         }
+
 
         public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
         {
-            bool canExecute = dctPass1KernelID >= 0 && dctPass2KernelID >= 0 && idctPass1KernelID >= 0 && idctPass2KernelID >= 0;
-            if (embedActive && (bitstreamBuffer == null || !bitstreamBuffer.IsValid()))
+            bool kernelsValid = dctPass1KernelID >= 0 && dctPass2KernelID >= 0 && idctPass1KernelID >= 0 && idctPass2KernelID >= 0;
+            if (!kernelsValid) return;
+            if (embedActive && (bitstreamBuffer == null || !bitstreamBuffer.IsValid()) || !DataManager.IsDataReady)
             {
-                // ÀÓº£µù È°¼ºÈ­ ½Ã ¹öÆÛ À¯È¿¼º ÀçÈ®ÀÎ (OnCameraSetup ÀÌÈÄ »óÅÂ º¯°æ °¡´É¼º ´ëºñ)
-                canExecute = false;
-                // Debug.LogWarning("Embed È°¼ºÈ­ »óÅÂÀÌ³ª Bitstream ¹öÆÛ°¡ À¯È¿ÇÏÁö ¾Ê¾Æ Pass ½ÇÇà °Ç³Ê¶İ´Ï´Ù.");
+                Debug.LogWarning("[DCTRenderPass] Embed í™œì„±í™” ìƒíƒœì´ë‚˜ ComputeBuffer ìœ íš¨í•˜ì§€ ì•ŠìŒ. í˜¹ì€ ë°ì´í„°ê°€ ë¡œë”© ë˜ì§€ ì•ŠìŒ");
+                return; // ì„ íƒì : ì‹¤í–‰ ì¤‘ë‹¨
             }
-            if (!canExecute) return;
-
 
             CommandBuffer cmd = CommandBufferPool.Get(profilerTag);
             var cameraTarget = renderingData.cameraData.renderer.cameraColorTargetHandle;
-
             int width = cameraTarget.rt.width;
             int height = cameraTarget.rt.height;
             int threadGroupsX = Mathf.CeilToInt((float)width / BLOCK_SIZE);
             int threadGroupsY = Mathf.CeilToInt((float)height / BLOCK_SIZE);
 
+            cmd.CopyTexture(cameraTarget, sourceTextureHandle); // Copy source
+
             using (new ProfilingScope(cmd, new ProfilingSampler(profilerTag)))
             {
-                // 1. ¿øº» -> ÀÓ½Ã ÇÚµé º¹»ç
-                cmd.CopyTexture(cameraTarget, sourceTextureHandle);
-
-                // 2. DCT Pass 1 (Rows) ½ÇÇà: Source -> IntermediateBuffer
                 cmd.DispatchCompute(computeShader, dctPass1KernelID, threadGroupsX, threadGroupsY, 1);
-
-                // 3. DCT Pass 2 (Cols + Embed) ½ÇÇà: IntermediateBuffer -> DCTOutput
-                //    (Áß¿ä: Pass 2 ½ÇÇà Àü¿¡ Bitstream ÆÄ¶ó¹ÌÅÍ ¼³Á¤ÀÌ OnCameraSetup¿¡¼­ ¿Ï·áµÇ¾î¾ß ÇÔ)
                 cmd.DispatchCompute(computeShader, dctPass2KernelID, threadGroupsX, threadGroupsY, 1);
-
-                // 4. IDCT Pass 1 (Cols) ½ÇÇà: DCTOutput -> IntermediateBuffer (Àç»ç¿ë)
                 cmd.DispatchCompute(computeShader, idctPass1KernelID, threadGroupsX, threadGroupsY, 1);
-
-                // 5. IDCT Pass 2 (Rows) ½ÇÇà: IntermediateBuffer -> IDCTOutput
                 cmd.DispatchCompute(computeShader, idctPass2KernelID, threadGroupsX, threadGroupsY, 1);
-
-                // 6. ÃÖÁ¾ °á°ú (IDCTOutput) -> Ä«¸Ş¶ó Å¸°ÙÀ¸·Î º¹»ç
-                cmd.CopyTexture(idctOutputHandle, cameraTarget);
+                //cmd.CopyTexture(idctOutputHandle, cameraTarget); // Copy result back
+                cmd.Blit(idctOutputHandle, cameraTarget, overlayMaterial); // Optional: Blit to camera target
             }
-
             context.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);
         }
 
         public override void OnCameraCleanup(CommandBuffer cmd) { }
-
         public void Cleanup()
-        {
-            Debug.Log("Optimized DCTRenderPass Cleanup È£ÃâµÊ");
-            bitstreamBuffer?.Release();
-            bitstreamBuffer = null;
-
-            RTHandles.Release(sourceTextureHandle);
-            RTHandles.Release(intermediateHandle);
-            RTHandles.Release(dctOutputHandle);
-            RTHandles.Release(idctOutputHandle);
-
-            sourceTextureHandle = null;
-            intermediateHandle = null;
-            dctOutputHandle = null;
-            idctOutputHandle = null;
+        { /* ì´ì „ê³¼ ë™ì¼ */
+            bitstreamBuffer?.Release(); bitstreamBuffer = null;
+            RTHandles.Release(sourceTextureHandle); sourceTextureHandle = null;
+            RTHandles.Release(intermediateHandle); intermediateHandle = null;
+            RTHandles.Release(dctOutputHandle); dctOutputHandle = null;
+            RTHandles.Release(idctOutputHandle); idctOutputHandle = null;
         }
     }
 }

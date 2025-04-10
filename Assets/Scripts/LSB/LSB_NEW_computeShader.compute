@@ -1,0 +1,74 @@
+﻿#pragma kernel LSBEmbedKernel
+
+// 입력 텍스처 (원본 이미지)
+Texture2D<float4> Source;
+// 출력 텍스처 (LSB 수정된 이미지)
+RWTexture2D<float4> Output;
+
+// 숨길 비트스트림 (동기화 패턴 + 길이 + 암호화 데이터 + 패딩)
+StructuredBuffer<uint> Bitstream;
+// Bitstream의 총 길이 (이미지 픽셀 수와 같음)
+uint BitLength;
+// 임베딩 활성화 플래그 (C#에서 설정)
+uint Embed;
+
+// 텍스처 크기
+uint Width;
+uint Height;
+
+// 스레드 그룹 크기 (예: 8x8)
+#define GROUP_SIZE_X 8
+#define GROUP_SIZE_Y 8
+
+[numthreads(GROUP_SIZE_X, GROUP_SIZE_Y, 1)]
+void LSBEmbedKernel(uint3 id : SV_DispatchThreadID)
+{
+    // 현재 스레드가 처리할 픽셀 좌표
+    uint2 pixelCoord = id.xy;
+
+    // 좌표가 이미지 범위 내에 있는지 확인
+    if (pixelCoord.x >= Width || pixelCoord.y >= Height)
+    {
+        return; // 범위를 벗어나면 아무 작업 안 함
+    }
+
+    // 원본 픽셀 값 읽기
+    float4 originalPixel = Source[pixelCoord];
+    float4 outputPixel = originalPixel; // 기본값은 원본과 동일
+
+    // 임베딩 활성화 조건 확인
+    if (Embed == 1)
+    {
+        // 현재 픽셀에 해당하는 비트스트림 인덱스 계산 (선형 인덱스)
+        uint bitIndex = pixelCoord.y * Width + pixelCoord.x;
+
+        // 비트스트림 인덱스가 유효 범위 내인지 확인
+        if (bitIndex < BitLength)
+        {
+            // 숨길 비트 값 읽기 (0 또는 1)
+            uint bitToEmbed = Bitstream[bitIndex];
+
+            // 파란색(Blue) 채널 값 가져오기 (0.0 ~ 1.0 범위)
+            float blueFloat = originalPixel.b;
+
+            // float 값을 uint (0 ~ 255 범위)로 변환
+            uint blueInt = (uint) (saturate(blueFloat) * 255.0f);
+
+            // LSB 수정: 마지막 비트를 0으로 만들고( & 0xFE ) 숨길 비트(0 또는 1)를 OR 연산
+            blueInt = (blueInt & 0xFE) | bitToEmbed;
+
+            // 수정된 uint 값을 다시 float (0.0 ~ 1.0 범위)로 변환
+            outputPixel.b = saturate((float) blueInt / 255.0f);
+
+            // 참고: 다른 채널(R, G)에도 숨기려면 위 과정을 반복
+            // uint redInt = (uint)(saturate(originalPixel.r) * 255.0f);
+            // redInt = (redInt & 0xFE) | bitToEmbed_R; // 다른 비트 인덱스 사용
+            // outputPixel.r = saturate((float)redInt / 255.0f);
+        }
+        // bitIndex >= BitLength 인 경우는 패딩된 영역이므로 원본 픽셀 유지 (outputPixel = originalPixel)
+    }
+    // Embed == 0 인 경우도 원본 픽셀 유지 (outputPixel = originalPixel)
+
+    // 결과 픽셀 값 쓰기
+    Output[pixelCoord] = outputPixel;
+}

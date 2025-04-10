@@ -175,16 +175,14 @@ public class OriginBlock
     private const string RUNTIME_AES_KEY = "OriginBlockData"; // <<< --- 반드시 안전한 방법으로 교체하세요!!!
 
     // (동기) Addressables를 통해 암호화된 데이터 에셋(Base64)을 로드하고 원본 byte[]를 반환합니다.
-    // 주의: 이 함수는 메인 스레드를 블록시킬 수 있습니다! Create() 등 초기화 시에만 사용 권장.
-    public static byte[] LoadEncryptedDataBytesSync(string addressableKey)
+    public static async Task<byte[]> LoadEncryptedDataBytesASync(string addressableKey)
     {
         byte[] encryptedData = null;
-        AsyncOperationHandle<TextAsset> handle = default; // finally에서 사용하기 위해
+        AsyncOperationHandle<TextAsset> handle = Addressables.LoadAssetAsync<TextAsset>(addressableKey); ; // finally에서 사용하기 위해
 
         try
         {
-            handle = Addressables.LoadAssetAsync<TextAsset>(addressableKey);
-            handle.WaitForCompletion(); // 여기서 블록됨!
+            await handle.Task;
 
             if (handle.Status == AsyncOperationStatus.Succeeded && handle.Result != null)
             {

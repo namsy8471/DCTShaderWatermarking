@@ -28,6 +28,12 @@ public class BenchmarkFPS : MonoBehaviour
 
     void Update()
     {
+        if (Input.GetKeyDown(KeyCode.Escape)) // Esc 키로 벤치마크 종료
+        {
+            StopBenchmark();
+            Application.Quit();
+        }
+
         if (isBenchmarking)
         {
             float deltaTime = Time.unscaledDeltaTime;
@@ -70,7 +76,7 @@ public class BenchmarkFPS : MonoBehaviour
         float low1PercentFPS = GetLow1PercentFPS();
 
         string result = $"Benchmark Results:\n" +
-                        $"Running Time : {benchmarkDuration}\n" +
+                        $"Running Time : {totalFrameTime}\n" +
                         $"Max FPS: {maxFPS:F2}\n" +
                         $"Min FPS: {minFPS:F2}\n" +
                         $"Avg FPS: {averageFPS:F2}\n" +

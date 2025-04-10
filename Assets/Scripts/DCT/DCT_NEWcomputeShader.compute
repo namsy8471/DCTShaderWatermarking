@@ -10,6 +10,10 @@
 #define SQRT1_N (1.0f / sqrt(BLOCK_SIZE_FLOAT))       // sqrt(1/8)
 #define SQRT2_N (sqrt(2.0f / BLOCK_SIZE_FLOAT)) // sqrt(2/8) = sqrt(1/4) = 0.5
 
+// +++ QIM 설정 추가 +++
+float QIM_DELTA; // 양자화 스텝 크기 (예시 값, 반드시 조정 필요!)
+// ++++++++++++++++++++++
+
 // 텍스처 크기 (C#에서 설정)
 uint Width;
 uint Height;
@@ -184,24 +188,39 @@ void DCT_Pass2_Cols(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, 
 
     // 계산된 최종 2D DCT 계수 (C(u,v) = C(threadX, threadY))
     float finalDctCoeff = colOutput[threadY];
-
-    // --- Bitstream 임베딩 (조건부) ---
+    
+    // --- Bitstream 임베딩 (QIM 방식으로 수정) ---
     if (Embed == 1)
     {
-        // 예시: C(4, 4) 계수에만 비트 숨김
         uint u = threadX; // 현재 계산된 DCT 계수의 u 좌표
         uint v = threadY; // 현재 계산된 DCT 계수의 v 좌표
 
+        // 예시: C(4, 4) 계수에만 비트 숨김 (★실제 적용 시 범위 확장 필요★)
         if (u == 4 && v == 4)
         {
             uint blockLinearIndex = groupID.y * (Width / BLOCK_SIZE) + groupID.x;
             if (blockLinearIndex < BitLength)
             {
-                uint bit = Bitstream[blockLinearIndex];
-                float scaleFactor = 10000.0f; // 필요시 조정
-                uint coeff_int = uint(finalDctCoeff * scaleFactor);
-                coeff_int = (coeff_int & 0xFFFFFFFE) | bit; // LSB 변경
-                finalDctCoeff = float(coeff_int) / scaleFactor;
+                uint bit = Bitstream[blockLinearIndex]; // 숨길 비트 (0 또는 1)
+
+                // --- QIM 로직 시작 ---
+                float originalCoeff = finalDctCoeff; // 양자화 전 원본 계수 값
+
+                if (bit == 0)
+                {
+                    // 비트 0: n * DELTA 에 가장 가깝게 양자화
+                    // round(value / delta) * delta
+                    float n0 = round(originalCoeff / QIM_DELTA);
+                    finalDctCoeff = n0 * QIM_DELTA;
+                }
+                else // bit == 1
+                {
+                    // 비트 1: (n + 0.5) * DELTA 에 가장 가깝게 양자화
+                    // round((value - delta/2) / delta) * delta + delta/2
+                    float n1 = round((originalCoeff - (QIM_DELTA / 2.0f)) / QIM_DELTA);
+                    finalDctCoeff = n1 * QIM_DELTA + (QIM_DELTA / 2.0f);
+                }
+                // --- QIM 로직 끝 ---
             }
         }
     }
@@ -330,4 +349,5 @@ void IDCT_Pass2_Rows(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID,
         finalPixelValue = saturate(finalPixelValue);
         IDCTOutput[uint2(writeX, writeY)] = float4(finalPixelValue, finalPixelValue, finalPixelValue, 1.0f);
     }
+
 }
