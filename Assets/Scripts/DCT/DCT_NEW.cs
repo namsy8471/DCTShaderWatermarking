@@ -14,7 +14,7 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
     [Tooltip("DCT 계수에 비트스트림을 임베딩할지 여부")]
     public bool embedBitstream = true;
     [Tooltip("QIM 스텝 크기")]
-    public float qimDelta = 10.0f;
+    public float qimDelta = 0.05f;
     [Tooltip("Addressables에서 로드할 암호화된 데이터 키")]
     public string addressableKey = "OriginBlockData";
 
@@ -49,11 +49,10 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
     {
         private ComputeShader computeShader;
         private int dctPass1KernelID, dctPass2KernelID, idctPass1KernelID, idctPass2KernelID;
-        private RTHandle sourceTextureHandle, intermediateHandle, dctOutputHandle, idctOutputHandle;
+        private RTHandle sourceTextureHandle, intermediateHandle, dctOutputHandle, idctOutputHandle, chromaBufferHandle;
         private string profilerTag;
         private bool embedActive;
         private ComputeBuffer bitstreamBuffer;
-        private Material overlayMaterial;
 
         private List<uint> payloadBits; // 헤더 포함, 패딩 전 원본 페이로드
         private List<uint> finalBitsToEmbed; // 최종 삽입될 비트 (패딩 완료)
@@ -74,12 +73,10 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
             payloadBits = new List<uint>();
             finalBitsToEmbed = new List<uint>();
 
-            overlayMaterial = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/BlitOverlay"));
         }
 
         public void SetEmbedActive(bool isActive) { embedActive = isActive; }
 
-        // UpdateBitstreamBuffer 함수는 LSBRenderPass와 동일하게 사용
         private void UpdateBitstreamBuffer(List<uint> data)
         { /* ... LSBRenderPass와 동일 ... */
             int count = (data != null) ? data.Count : 0;
@@ -125,14 +122,27 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
         public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
         {
             var desc = renderingData.cameraData.cameraTargetDescriptor;
-            desc.depthBufferBits = 0; desc.msaaSamples = 1;
+            desc.depthBufferBits = 0;
+            desc.msaaSamples = 1;
 
             // RTHandle 할당 (기존과 동일)
-            var intermediateDesc = desc; intermediateDesc.colorFormat = RenderTextureFormat.RFloat; intermediateDesc.sRGB = false; intermediateDesc.enableRandomWrite = true;
-            var idctDesc = desc; idctDesc.enableRandomWrite = true;
+            var intermediateDesc = desc; 
+            intermediateDesc.colorFormat = RenderTextureFormat.RFloat;
+            intermediateDesc.sRGB = false; 
+            intermediateDesc.enableRandomWrite = true;
+
+            var chromaDesc = desc; // CbCr 저장용
+            chromaDesc.colorFormat = RenderTextureFormat.RGFloat; // ★★★ CbCr은 float2 (RG32_SFloat) ★★★
+            chromaDesc.sRGB = false;
+            chromaDesc.enableRandomWrite = true; // Pass1에서 쓰기 위함
+
+            var idctDesc = desc;
+            idctDesc.enableRandomWrite = true;
+
             RenderingUtils.ReAllocateIfNeeded(ref sourceTextureHandle, desc, FilterMode.Point, name: "_SourceCopyForDCT");
             RenderingUtils.ReAllocateIfNeeded(ref intermediateHandle, intermediateDesc, FilterMode.Point, name: "_IntermediateDCT_IDCT");
             RenderingUtils.ReAllocateIfNeeded(ref dctOutputHandle, intermediateDesc, FilterMode.Point, name: "_DCTOutput");
+            RenderingUtils.ReAllocateIfNeeded(ref chromaBufferHandle, chromaDesc, FilterMode.Point, name: "_ChromaBufferCbCr"); // ★★★ ChromaBuffer 할당 ★★★
             RenderingUtils.ReAllocateIfNeeded(ref idctOutputHandle, idctDesc, FilterMode.Point, name: "_IDCTOutput");
 
             // --- 비트스트림 준비 (비동기 로딩 확인 및 타일링 패딩 적용) ---
@@ -145,62 +155,53 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
             // <<< 변경/추가된 부분 시작 >>>
             if (embedActive && DataManager.IsDataReady && DataManager.EncryptedOriginData != null)
             {
-                // 데이터가 준비되었으므로 페이로드 구성 및 패딩 시도
+                // OnCameraSetup 내부, if (embedActive && DataManager.IsDataReady...) 블록 안
                 try
                 {
-                    finalBitsToEmbed = payloadBits;
-                    // 초기화 및 복사
-                    // 1. 헤더 포함 페이로드 구성 (OriginBlock 클래스 함수 호출)
-                    // payloadBits는 생성자 등에서 미리 구성해 두었거나 여기서 호출
-                    // 여기서는 생성자에서 payloadBits를 구성했다고 가정
-                    if (payloadBits == null || payloadBits.Count == 0)
-                    {
-                        payloadBits = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
-                        finalBitsToEmbed = payloadBits;
-                        // 만약 생성자에서 로딩 실패 등으로 payloadBits가 준비 안됐다면 여기서 재시도 또는 오류 처리
-                        // 예시: payloadBits = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
-                        // 아래는 payloadBits가 유효하다고 가정하고 진행
-                        if (payloadBits == null || payloadBits.Count == 0)
-                        {
-                            finalBitsToEmbed = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
-                            Debug.LogError("[DCTRenderPass] 페이로드 비트가 준비되지 않았습니다.");
-                            throw new InvalidOperationException("Payload bits are not ready.");
-                        }
-                    }
+                    // 1. DataManager에서 직접 원본 페이로드 구성
+                    List<uint> currentPayload = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
 
-                    int width = desc.width;
-                    int height = desc.height;
-                    // DCT 용량 = 총 블록 수
-                    int numBlocksX = width / BLOCK_SIZE;
-                    int numBlocksY = height / BLOCK_SIZE;
-                    int availableCapacity = numBlocksX * numBlocksY;
-                    int totalPayloadLength = payloadBits.Count; // L = Sync+Len+Data 길이
-
-                    if (availableCapacity == 0)
+                    // 2. 구성 결과 확인
+                    if (currentPayload == null || currentPayload.Count == 0)
                     {
-                        Debug.LogWarning("[DCTRenderPass] 이미지 크기가 작아 블록 생성 불가.");
-                        // finalBitsToEmbed는 이미 비어있음
+                        Debug.LogWarning("[DCTRenderPass] 원본 페이로드 구성 실패 또는 데이터 없음.");
+                        // finalBitsToEmbed는 이미 Clear()된 상태이므로 더 할 것 없음
                     }
                     else
                     {
-                        // 2. 자가 복제(타일링) 패딩 수행
-                        finalBitsToEmbed.Capacity = availableCapacity;
-                        int currentPosition = 0;
-                        while (currentPosition < availableCapacity)
+                        // 3. 패딩 로직 수행 (currentPayload를 원본으로 사용)
+                        int width = desc.width;
+                        int height = desc.height;
+                        int numBlocksX = width / BLOCK_SIZE;
+                        int numBlocksY = height / BLOCK_SIZE;
+                        int availableCapacity = numBlocksX * numBlocksY;
+                        int totalPayloadLength = currentPayload.Count; // <- currentPayload 사용
+
+                        if (availableCapacity == 0)
                         {
-                            int remainingSpace = availableCapacity - currentPosition;
-                            int countToAdd = Math.Min(totalPayloadLength, remainingSpace);
-                            if (countToAdd <= 0 || totalPayloadLength == 0) break;
-                            finalBitsToEmbed.AddRange(payloadBits.GetRange(0, countToAdd));
-                            currentPosition += countToAdd;
+                            Debug.LogWarning("[DCTRenderPass] 이미지 크기가 작아 블록 생성 불가.");
                         }
-                        // Debug.Log($"[DCTRenderPass] 자가 복제 패딩 완료. 최종 크기: {finalBitsToEmbed.Count} / 용량: {availableCapacity}");
+                        else
+                        {
+                            finalBitsToEmbed.Clear(); // 패딩 전에 확실히 비우기
+                            finalBitsToEmbed.Capacity = availableCapacity;
+                            int currentPosition = 0;
+                            while (currentPosition < availableCapacity)
+                            {
+                                int remainingSpace = availableCapacity - currentPosition;
+                                int countToAdd = Math.Min(totalPayloadLength, remainingSpace);
+                                if (countToAdd <= 0) break; // totalPayloadLength가 0인 경우 포함
+                                finalBitsToEmbed.AddRange(currentPayload.GetRange(0, countToAdd)); // <- currentPayload 사용
+                                currentPosition += countToAdd;
+                            }
+                            // Debug.Log($"[DCTRenderPass] 패딩 완료. 최종 크기: {finalBitsToEmbed.Count}");
+                        }
                     }
                 }
                 catch (Exception ex)
                 {
                     Debug.LogError($"[{profilerTag}] 페이로드 구성 또는 패딩 중 오류: {ex.Message}");
-                    finalBitsToEmbed.Clear(); // 오류 시 비움
+                    finalBitsToEmbed.Clear(); // 오류 시 확실히 비움
                 }
             }
             // <<< 변경/추가된 부분 끝 >>>
@@ -225,50 +226,46 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
             Debug.Log($"[DCTRenderPass] 최종 비트스트림 길이: {currentBitLength} / 유효성: {bufferValid}");
 
             // 공통 파라미터 (모든 커널에 설정 필요할 수 있음 - 확인 필요)
-            computeShader.SetInt("Width", desc.width);
-            computeShader.SetInt("Height", desc.height);
+            cmd.SetComputeIntParam(computeShader, "Width", desc.width);
+            cmd.SetComputeIntParam(computeShader, "Height", desc.height);
+            cmd.SetComputeFloatParam(computeShader, "QIM_DELTA", qimDelta);
 
             // 각 커널 텍스처 바인딩 (기존과 동일)
             if (dctPass1KernelID >= 0)
             {
-                computeShader.SetTexture(dctPass1KernelID, "Source", sourceTextureHandle);
-                computeShader.SetTexture(dctPass1KernelID, "IntermediateBuffer", intermediateHandle);
+                cmd.SetComputeTextureParam(computeShader, dctPass1KernelID, "Source", sourceTextureHandle);
+                cmd.SetComputeTextureParam(computeShader, dctPass1KernelID, "IntermediateBuffer", intermediateHandle);
+                cmd.SetComputeTextureParam(computeShader, dctPass1KernelID, "ChromaBuffer", chromaBufferHandle);     // CbCr 출력
             }
             if (dctPass2KernelID >= 0)
             {
-                computeShader.SetTexture(dctPass2KernelID, "IntermediateBuffer", intermediateHandle);
-                computeShader.SetTexture(dctPass2KernelID, "DCTOutput", dctOutputHandle);
-                cmd.SetComputeBufferParam(computeShader, dctPass2KernelID, "Bitstream", bitstreamBuffer);
-                cmd.SetComputeFloatParam(computeShader, "QIM_DELTA", qimDelta);
-                // Bitstream 파라미터 (DCT Pass 2 커널에만 필요)
-                if (shouldEmbed)
-                {
-                    Debug.Log($"[DCTRenderPass] shouldEmbed True!");
+                cmd.SetComputeTextureParam(computeShader, dctPass2KernelID, "IntermediateBuffer", intermediateHandle);
+                cmd.SetComputeTextureParam(computeShader, dctPass2KernelID, "DCTOutput", dctOutputHandle);
 
-                    cmd.SetComputeIntParam(computeShader, "BitLength", currentBitLength);
-                    cmd.SetComputeIntParam(computeShader, "Embed", 1);
-                }
-                else
+                // Bitstream 버퍼 설정은 유효할 때만 (shouldEmbed 조건 대신 bufferValid 사용)
+                if (bufferValid && currentBitLength > 0) // 버퍼가 실제로 유효할 때만 바인딩 시도
                 {
-                    Debug.Log($"[DCTRenderPass] shouldEmbed false!");
-
-                    cmd.SetComputeIntParam(computeShader, "BitLength", 0);
-                    cmd.SetComputeIntParam(computeShader, "Embed", 0);
+                    cmd.SetComputeBufferParam(computeShader, dctPass2KernelID, "Bitstream", bitstreamBuffer);
                 }
+                // Embed 관련 파라미터는 항상 설정 (셰이더가 Embed 값 보고 처리하도록)
+                cmd.SetComputeIntParam(computeShader, "BitLength", shouldEmbed ? currentBitLength : 0);
+                cmd.SetComputeIntParam(computeShader, "Embed", shouldEmbed ? 1 : 0);
+
+                if (shouldEmbed) Debug.Log($"[DCTRenderPass] Setting Bitstream Buffer (Count: {currentBitLength})");
+                else Debug.LogWarning($"[DCTRenderPass] SKIPPING Bitstream Buffer setting (shouldEmbed: {shouldEmbed})");
             }
-
             if (idctPass1KernelID >= 0)
             {
-                computeShader.SetTexture(idctPass1KernelID, "DCTOutput", dctOutputHandle);
-                computeShader.SetTexture(idctPass1KernelID, "IntermediateBuffer", intermediateHandle);
+                cmd.SetComputeTextureParam(computeShader, idctPass1KernelID, "DCTOutput", dctOutputHandle);
+                cmd.SetComputeTextureParam(computeShader, idctPass1KernelID, "IntermediateBuffer", intermediateHandle);
             }
             if (idctPass2KernelID >= 0)
             {
-                computeShader.SetTexture(idctPass2KernelID, "IntermediateBuffer", intermediateHandle);
-                computeShader.SetTexture(idctPass2KernelID, "IDCTOutput", idctOutputHandle);
+                cmd.SetComputeTextureParam(computeShader, idctPass2KernelID, "IntermediateBuffer", intermediateHandle);
+                cmd.SetComputeTextureParam(computeShader, idctPass2KernelID, "ChromaBuffer", chromaBufferHandle);     // 원본 CbCr 입력
+                cmd.SetComputeTextureParam(computeShader, idctPass2KernelID, "IDCTOutput", idctOutputHandle);
             }
 
-            overlayMaterial.SetTexture("_MainTex", idctOutputHandle);
 
         }
 
@@ -290,7 +287,7 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
             int threadGroupsX = Mathf.CeilToInt((float)width / BLOCK_SIZE);
             int threadGroupsY = Mathf.CeilToInt((float)height / BLOCK_SIZE);
 
-            cmd.CopyTexture(cameraTarget, sourceTextureHandle); // Copy source
+            cmd.Blit(cameraTarget, sourceTextureHandle); // Copy source
 
             using (new ProfilingScope(cmd, new ProfilingSampler(profilerTag)))
             {
@@ -298,8 +295,7 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
                 cmd.DispatchCompute(computeShader, dctPass2KernelID, threadGroupsX, threadGroupsY, 1);
                 cmd.DispatchCompute(computeShader, idctPass1KernelID, threadGroupsX, threadGroupsY, 1);
                 cmd.DispatchCompute(computeShader, idctPass2KernelID, threadGroupsX, threadGroupsY, 1);
-                //cmd.CopyTexture(idctOutputHandle, cameraTarget); // Copy result back
-                cmd.Blit(idctOutputHandle, cameraTarget, overlayMaterial); // Optional: Blit to camera target
+                cmd.Blit(idctOutputHandle,  cameraTarget);
             }
             context.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);

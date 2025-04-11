@@ -1,353 +1,306 @@
-﻿#pragma kernel DCT_Pass1_Rows // 1단계: 행(Row) 기준 1D DCT
-#pragma kernel DCT_Pass2_Cols // 2단계: 열(Column) 기준 1D DCT + Bitstream 임베딩
-#pragma kernel IDCT_Pass1_Cols // 1단계: 열(Column) 기준 1D IDCT
-#pragma kernel IDCT_Pass2_Rows // 2단계: 행(Row) 기준 1D IDCT
+﻿#pragma kernel DCT_Pass1_Rows // Y 채널 DCT + CbCr 저장
+#pragma kernel DCT_Pass2_Cols // Y 채널 DCT + Bitstream 임베딩 (Y 계수)
+#pragma kernel IDCT_Pass1_Cols // Y 채널 IDCT
+#pragma kernel IDCT_Pass2_Rows // Y 채널 IDCT + CbCr 결합 + RGB 변환
 
 // --- 공통 설정 ---
 #define BLOCK_SIZE 8
 #define BLOCK_SIZE_FLOAT 8.0f
 #define PI 3.14159265359f
-#define SQRT1_N (1.0f / sqrt(BLOCK_SIZE_FLOAT))       // sqrt(1/8)
+#define SQRT1_N (1.0f / sqrt(BLOCK_SIZE_FLOAT))     // sqrt(1/8)
 #define SQRT2_N (sqrt(2.0f / BLOCK_SIZE_FLOAT)) // sqrt(2/8) = sqrt(1/4) = 0.5
 
-// +++ QIM 설정 추가 +++
-float QIM_DELTA; // 양자화 스텝 크기 (예시 값, 반드시 조정 필요!)
-// ++++++++++++++++++++++
+// QIM 설정
+float QIM_DELTA; // 양자화 스텝 크기 (C#에서 설정)
 
-// 텍스처 크기 (C#에서 설정)
+// 텍스처 크기
 uint Width;
 uint Height;
 
-// --- DCT 입력/출력 ---
-Texture2D<float4> Source; // 원본 이미지 (Pass 1 입력)
-RWTexture2D<float> IntermediateBuffer; // 1단계 결과 (Pass 1 출력 / Pass 2 입력)
-RWTexture2D<float> DCTOutput; // 최종 DCT 계수 (Pass 2 출력 / IDCT Pass 1 입력)
+// --- 입출력 텍스처 ---
+Texture2D<float4> Source; // 원본 이미지 (float4)
+RWTexture2D<float> IntermediateBuffer; // ★★★ CHANGED: 중간 Y 버퍼 (float) ★★★
+RWTexture2D<float> DCTOutput; // ★★★ CHANGED: 최종 Y DCT 계수 (float) ★★★
+RWTexture2D<float2> ChromaBuffer; // ★★★ ADDED: 원본 CbCr 저장용 (float2) ★★★
+RWTexture2D<float4> IDCTOutput; // 최종 복원 이미지 (float4)
 
 // --- Bitstream 관련 입력 (Pass 2에서 사용) ---
 StructuredBuffer<uint> Bitstream;
 uint BitLength;
 uint Embed; // 0: 비활성, 1: 활성
 
-// --- IDCT 출력 ---
-// IntermediateBuffer 재사용 (IDCT Pass 1 출력 / IDCT Pass 2 입력)
-RWTexture2D<float4> IDCTOutput; // 최종 복원 이미지 (IDCT Pass 2 출력)
-
-
 // --- 공유 메모리 ---
-groupshared float SharedBlock[BLOCK_SIZE][BLOCK_SIZE];
+groupshared float SharedBlockY[BLOCK_SIZE][BLOCK_SIZE]; // Y 채널용
+// CbCr은 Pass1에서 쓰고 Pass4에서 읽으므로 공유 메모리 불필요 (직접 텍스처 사용)
 
-// --- 1D DCT 함수 ---
-// inputData: 길이 BLOCK_SIZE의 1D 데이터 배열
-// outputData: 길이 BLOCK_SIZE의 1D DCT 결과 배열
-// stride: inputData 읽기 간격 (행 처리 시 1, 열 처리 시 BLOCK_SIZE)
-// groupThreadID_idx: 현재 스레드의 처리할 인덱스 (0~7)
-void DCT_1D(float inputData[BLOCK_SIZE], out float outputData[BLOCK_SIZE], uint groupThreadID_idx)
+// --- 색 공간 변환 함수 (BT.601 기준) ---
+// RGB [0,1] to YCbCr [Y:0..1, CbCr:-0.5..0.5]
+float3 RGBToYCbCr(float3 rgb)
+{
+    float y = 0.299f * rgb.r + 0.587f * rgb.g + 0.114f * rgb.b;
+    float cb = -0.169f * rgb.r - 0.331f * rgb.g + 0.500f * rgb.b; // Range -0.5 to 0.5
+    float cr = 0.500f * rgb.r - 0.419f * rgb.g - 0.081f * rgb.b; // Range -0.5 to 0.5
+    return float3(y, cb, cr);
+}
+
+// YCbCr [Y:0..1, CbCr:-0.5..0.5] to RGB [0,1]
+float3 YCbCrToRGB(float3 ycbcr)
+{
+    float r = ycbcr.x + 1.402f * ycbcr.z; // y + 1.402 * Cr
+    float g = ycbcr.x - 0.344f * ycbcr.y - 0.714f * ycbcr.z; // y - 0.344 * Cb - 0.714 * Cr
+    float b = ycbcr.x + 1.772f * ycbcr.y; // y + 1.772 * Cb
+    // Saturate to ensure values are in [0, 1] range after conversion
+    return saturate(float3(r, g, b));
+}
+
+// --- 1D DCT 함수 (이제 float 입력/출력) ---
+void DCT_1D_Single(float inputData[BLOCK_SIZE], out float outputData[BLOCK_SIZE], uint groupThreadID_idx)
 {
     float sum = 0.0f;
-    // k = groupThreadID_idx (결과 주파수 인덱스)
     float k = (float) groupThreadID_idx;
-    float Ck = (k == 0.0f) ? SQRT1_N : SQRT2_N; // 정규화 계수
-
+    float Ck = (k == 0.0f) ? SQRT1_N : SQRT2_N;
     for (uint n = 0; n < BLOCK_SIZE; ++n)
     {
-        // cos( PI * k * (2n + 1) / (2 * N) )
         float cosVal = cos(PI * k * (2.0f * n + 1.0f) / (2.0f * BLOCK_SIZE_FLOAT));
         sum += inputData[n] * cosVal;
     }
     outputData[groupThreadID_idx] = Ck * sum;
 }
 
-// --- 1D IDCT 함수 ---
-// inputData: 길이 BLOCK_SIZE의 1D DCT 계수 배열
-// outputData: 길이 BLOCK_SIZE의 1D IDCT 복원 결과 배열
-// stride: inputData 읽기 간격
-// groupThreadID_idx: 현재 스레드의 처리할 인덱스 (0~7)
-void IDCT_1D(float inputData[BLOCK_SIZE], out float outputData[BLOCK_SIZE], uint groupThreadID_idx)
+// --- 1D IDCT 함수 (이제 float 입력/출력) ---
+void IDCT_1D_Single(float inputData[BLOCK_SIZE], out float outputData[BLOCK_SIZE], uint groupThreadID_idx)
 {
     float sum = 0.0f;
-    // n = groupThreadID_idx (복원할 공간 인덱스)
     float n = (float) groupThreadID_idx;
-
     for (uint k = 0; k < BLOCK_SIZE; ++k)
     {
         float K = (float) k;
-        float Ck = (K == 0.0f) ? SQRT1_N : SQRT2_N; // 정규화 계수
-        // cos( PI * k * (2n + 1) / (2 * N) )
+        float Ck = (K == 0.0f) ? SQRT1_N : SQRT2_N;
         float cosVal = cos(PI * K * (2.0f * n + 1.0f) / (2.0f * BLOCK_SIZE_FLOAT));
         sum += Ck * inputData[k] * cosVal;
     }
-    // IDCT 정규화 (표준에 따라서는 전체 합에 sqrt(2/N) 또는 다른 상수 곱 필요 없음)
-    // DCT-II -> DCT-III 변환 쌍은 종종 추가 스케일링 없이 사용됨 (결과 범위 확인 필요)
     outputData[groupThreadID_idx] = sum;
 }
 
-
 // ==============================================
-// DCT Pass 1: Rows
-// 각 스레드가 하나의 DCT 계수 C(u, v) 중 행(row) 변환 부분을 계산
-// 스레드 그룹: 8x8 (하나의 블록 처리)
+// DCT Pass 1: Rows (Y DCT + CbCr 저장)
 // ==============================================
 [numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
 void DCT_Pass1_Rows(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
 {
     uint blockX = groupID.x * BLOCK_SIZE;
     uint blockY = groupID.y * BLOCK_SIZE;
-    uint threadX = groupThreadID.x; // DCT 계수의 u (주파수) 역할
-    uint threadY = groupThreadID.y; // 블록 내 행 인덱스 y 역할
+    uint threadX = groupThreadID.x; // u 역할
+    uint threadY = groupThreadID.y; // 행 y 역할
 
-    // 1. 블록의 한 행(row)을 공유 메모리로 로드
-    //    각 스레드는 자신의 y좌표(threadY) 행의 x좌표(threadX) 픽셀을 로드
-    uint loadX = blockX + threadX;
-    uint loadY = blockY + threadY;
-    if (loadX < Width && loadY < Height)
-    {
-        float4 sourcePixel = Source.Load(int3(loadX, loadY, 0));
-        // 휘도 계산 (또는 R 채널 등 단일 채널 사용)
-        SharedBlock[threadY][threadX] = dot(sourcePixel.rgb, float3(0.299f, 0.587f, 0.114f));
-    }
-    else
-    {
-        SharedBlock[threadY][threadX] = 0.0f; // 패딩
-    }
-
-    GroupMemoryBarrierWithGroupSync(); // 모든 스레드가 로드 완료까지 대기
-
-    // 2. 각 스레드는 자신이 담당하는 행(threadY)에 대해 1D DCT 수행
-    //    입력: SharedBlock[threadY] (길이 8 배열)
-    //    출력: 임시 저장용 배열 (스레드 로컬) 또는 공유 메모리 재사용(주의!)
-    //    여기서는 스레드 로컬 변수 사용 후 공유 메모리에 다시 쓰는 방식 선택
-    float rowInput[BLOCK_SIZE];
-    float rowOutput[BLOCK_SIZE];
-
-    // 스레드 로컬 배열에 해당 행 데이터 복사
+    // 1. 블록의 한 행(row) 로드 및 YCbCr 변환
+    float3 ycbcr[BLOCK_SIZE]; // Store YCbCr for the row locally first
     for (uint i = 0; i < BLOCK_SIZE; ++i)
     {
-        rowInput[i] = SharedBlock[threadY][i];
+        uint loadX = blockX + i;
+        uint loadY = blockY + threadY;
+        if (loadX < Width && loadY < Height)
+        {
+            ycbcr[i] = RGBToYCbCr(Source.Load(int3(loadX, loadY, 0)).rgb);
+        }
+        else
+        {
+            ycbcr[i] = float3(0.0, 0.0, 0.0); // Pad with zero YCbCr
+        }
     }
 
-    // 1D DCT 계산 (현재 스레드는 결과 배열의 threadX 인덱스 담당)
-    DCT_1D(rowInput, rowOutput, threadX); // rowOutput[threadX] 에 결과 저장됨
+    // 2. Y 채널에 대해 1D DCT 수행
+    float rowInputY[BLOCK_SIZE];
+    float rowOutputY[BLOCK_SIZE];
+    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    {
+        rowInputY[i] = ycbcr[i].x;
+    } // Extract Y channel
 
-    // 계산된 1D DCT 결과를 다시 공유 메모리에 쓰기 (재사용)
-    // 중요: 모든 스레드가 동시에 자기 위치(threadY, threadX)에 쓰므로 충돌 없음
-    SharedBlock[threadY][threadX] = rowOutput[threadX];
+    DCT_1D_Single(rowInputY, rowOutputY, threadX); // Calculate 1D DCT for Y (threadX is k index)
 
-    GroupMemoryBarrierWithGroupSync(); // 모든 스레드가 1D DCT 및 공유 메모리 쓰기 완료까지 대기
-
-    // 3. 공유 메모리의 중간 결과를 IntermediateBuffer에 쓰기
-    //    현재 스레드는 (blockX + threadX, blockY + threadY) 위치 담당
+    // 3. 중간 Y 결과 (1D DCT된) 와 원본 CbCr 저장
     uint writeX = blockX + threadX;
     uint writeY = blockY + threadY;
     if (writeX < Width && writeY < Height)
     {
-        IntermediateBuffer[uint2(writeX, writeY)] = SharedBlock[threadY][threadX];
+        IntermediateBuffer[uint2(writeX, writeY)] = rowOutputY[threadX]; // Write 1D DCT Y result
+        ChromaBuffer[uint2(writeX, writeY)] = ycbcr[threadX].yz; // Write original CbCr (using threadX to index original pixel pos)
     }
 }
 
-
 // ==============================================
-// DCT Pass 2: Columns + Bitstream Embedding
-// 각 스레드가 IntermediateBuffer에서 열(column) 데이터를 읽어 1D DCT 수행 -> 최종 DCT 계수 계산
-// 스레드 그룹: 8x8
+// DCT Pass 2: Columns + Bitstream Embedding (Y 처리)
 // ==============================================
 [numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
 void DCT_Pass2_Cols(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
 {
     uint blockX = groupID.x * BLOCK_SIZE;
     uint blockY = groupID.y * BLOCK_SIZE;
-    uint threadX = groupThreadID.x; // 블록 내 열 인덱스 x 역할
-    uint threadY = groupThreadID.y; // DCT 계수의 v (주파수) 역할
+    uint threadX = groupThreadID.x; // 열 x 역할
+    uint threadY = groupThreadID.y; // v 역할
 
-    // 1. 블록의 한 열(column) 데이터를 공유 메모리로 로드
-    //    각 스레드는 자신의 x좌표(threadX) 열의 y좌표(threadY) 값을 IntermediateBuffer에서 로드
+    // 1. 블록의 한 열(column) Y 데이터를 공유 메모리로 로드
     uint loadX = blockX + threadX;
     uint loadY = blockY + threadY;
     if (loadX < Width && loadY < Height)
     {
-        SharedBlock[threadY][threadX] = IntermediateBuffer.Load(int3(loadX, loadY, 0));
+        SharedBlockY[threadY][threadX] = IntermediateBuffer.Load(int3(loadX, loadY, 0)); // Load Y
     }
     else
     {
-        SharedBlock[threadY][threadX] = 0.0f; // 패딩
+        SharedBlockY[threadY][threadX] = 0.0f;
     }
 
-    GroupMemoryBarrierWithGroupSync(); // 로드 완료 대기
+    GroupMemoryBarrierWithGroupSync();
 
-    // 2. 각 스레드는 자신이 담당하는 열(threadX)에 대해 1D DCT 수행
-    float colInput[BLOCK_SIZE];
-    float colOutput[BLOCK_SIZE];
-
-    // 스레드 로컬 배열에 해당 열 데이터 복사 (전치 효과)
+    // 2. 각 스레드는 담당 열(threadX)에 대해 1D DCT 수행 (Y 채널)
+    float colInputY[BLOCK_SIZE];
+    float colOutputY[BLOCK_SIZE];
     for (uint i = 0; i < BLOCK_SIZE; ++i)
     {
-        colInput[i] = SharedBlock[i][threadX]; // 행(i)은 고정, 열(threadX)은 현재 스레드 담당
+        colInputY[i] = SharedBlockY[i][threadX];
     }
 
-    // 1D DCT 계산 (현재 스레드는 결과 배열의 threadY 인덱스 담당)
-    DCT_1D(colInput, colOutput, threadY); // colOutput[threadY] 에 결과 저장됨
+    DCT_1D_Single(colInputY, colOutputY, threadY); // Calculate 1D DCT for Y (threadY is k index)
+    float finalDctCoeffY = colOutputY[threadY]; // Final Y DCT coefficient C_Y(u,v)
 
-    // 계산된 최종 2D DCT 계수 (C(u,v) = C(threadX, threadY))
-    float finalDctCoeff = colOutput[threadY];
-    
-    // --- Bitstream 임베딩 (QIM 방식으로 수정) ---
+    // --- Bitstream 임베딩 (QIM 방식, Y 채널 계수 사용) ---
     if (Embed == 1)
     {
-        uint u = threadX; // 현재 계산된 DCT 계수의 u 좌표
-        uint v = threadY; // 현재 계산된 DCT 계수의 v 좌표
-
-        // 예시: C(4, 4) 계수에만 비트 숨김 (★실제 적용 시 범위 확장 필요★)
+        uint u = threadX;
+        uint v = threadY;
+        // 예시: C_Y(4, 4) 계수에만 비트 숨김 (★실제 적용 시 범위 확장 필요★)
         if (u == 4 && v == 4)
         {
             uint blockLinearIndex = groupID.y * (Width / BLOCK_SIZE) + groupID.x;
             if (blockLinearIndex < BitLength)
             {
-                uint bit = Bitstream[blockLinearIndex]; // 숨길 비트 (0 또는 1)
-
-                // --- QIM 로직 시작 ---
-                float originalCoeff = finalDctCoeff; // 양자화 전 원본 계수 값
-
+                uint bit = Bitstream[blockLinearIndex];
+                float originalCoeffY = finalDctCoeffY;
                 if (bit == 0)
                 {
-                    // 비트 0: n * DELTA 에 가장 가깝게 양자화
-                    // round(value / delta) * delta
-                    float n0 = round(originalCoeff / QIM_DELTA);
-                    finalDctCoeff = n0 * QIM_DELTA;
+                    float n0 = round(originalCoeffY / QIM_DELTA);
+                    finalDctCoeffY = n0 * QIM_DELTA;
                 }
-                else // bit == 1
+                else
                 {
-                    // 비트 1: (n + 0.5) * DELTA 에 가장 가깝게 양자화
-                    // round((value - delta/2) / delta) * delta + delta/2
-                    float n1 = round((originalCoeff - (QIM_DELTA / 2.0f)) / QIM_DELTA);
-                    finalDctCoeff = n1 * QIM_DELTA + (QIM_DELTA / 2.0f);
+                    float n1 = round((originalCoeffY - (QIM_DELTA / 2.0f)) / QIM_DELTA);
+                    finalDctCoeffY = n1 * QIM_DELTA + (QIM_DELTA / 2.0f);
                 }
-                // --- QIM 로직 끝 ---
             }
         }
     }
     // --- 임베딩 끝 ---
 
-    // 3. 최종 DCT 계수를 DCTOutput 텍스처에 쓰기
-    uint writeX = blockX + threadX; // u 좌표
-    uint writeY = blockY + threadY; // v 좌표
+    // 3. 최종 Y DCT 계수를 DCTOutput 텍스처에 쓰기
+    uint writeX = blockX + threadX; // u
+    uint writeY = blockY + threadY; // v
     if (writeX < Width && writeY < Height)
     {
-        DCTOutput[uint2(writeX, writeY)] = finalDctCoeff;
+        DCTOutput[uint2(writeX, writeY)] = finalDctCoeffY;
     }
 }
 
 
 // ==============================================
-// IDCT Pass 1: Columns
-// DCT 계수를 읽어 열(Column) 기준 1D IDCT 수행
-// 스레드 그룹: 8x8
+// IDCT Pass 1: Columns (Y 처리)
 // ==============================================
 [numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
 void IDCT_Pass1_Cols(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
 {
     uint blockX = groupID.x * BLOCK_SIZE;
     uint blockY = groupID.y * BLOCK_SIZE;
-    uint threadX = groupThreadID.x; // 블록 내 열 인덱스 x (u) 역할
-    uint threadY = groupThreadID.y; // 블록 내 행 인덱스 y (v) 역할
+    uint threadX = groupThreadID.x; // u 역할
+    uint threadY = groupThreadID.y; // n 역할 (IDCT 결과 행 인덱스)
 
-    // 1. 블록의 DCT 계수 한 열(column)을 공유 메모리로 로드
-    //    스레드는 자신의 x좌표(threadX) 열의 y좌표(threadY) DCT 계수 C(u,v) 로드
+    // 1. 블록의 Y DCT 계수 한 열(column)을 공유 메모리로 로드
     uint loadX = blockX + threadX; // u
     uint loadY = blockY + threadY; // v
     if (loadX < Width && loadY < Height)
     {
-        // DCTOutput에서 읽음 (이전 단계의 결과)
-        SharedBlock[threadY][threadX] = DCTOutput.Load(int3(loadX, loadY, 0));
+        SharedBlockY[threadY][threadX] = DCTOutput.Load(int3(loadX, loadY, 0)); // Load Y coeff C_Y(u,v)
     }
     else
     {
-        SharedBlock[threadY][threadX] = 0.0f;
+        SharedBlockY[threadY][threadX] = 0.0f;
     }
 
-    GroupMemoryBarrierWithGroupSync(); // 로드 완료 대기
+    GroupMemoryBarrierWithGroupSync();
 
-    // 2. 각 스레드는 자신이 담당하는 열(threadX)에 대해 1D IDCT 수행
-    float colInput[BLOCK_SIZE];
-    float colOutput[BLOCK_SIZE];
-
-    // 스레드 로컬 배열에 해당 열 데이터 복사 (전치 효과)
+    // 2. 각 스레드는 담당 열(threadX=u)에 대해 1D IDCT 수행 (Y 채널)
+    float colInputY[BLOCK_SIZE];
+    float colOutputY[BLOCK_SIZE];
     for (uint i = 0; i < BLOCK_SIZE; ++i)
     {
-        colInput[i] = SharedBlock[i][threadX]; // i=v, threadX=u
-    }
+        colInputY[i] = SharedBlockY[i][threadX];
+    } // Get column C_Y(u, v=i)
 
-    // 1D IDCT 계산 (결과 배열의 threadY 인덱스 담당)
-    // 입력은 DCT 계수(주파수 영역 k), 출력은 공간 영역 값(n)의 중간 결과
-    IDCT_1D(colInput, colOutput, threadY); // colOutput[threadY] 에 결과 저장됨 (n 역할)
+    IDCT_1D_Single(colInputY, colOutputY, threadY); // Calculate intermediate Y' (threadY is n index)
+    float idctResultY = colOutputY[threadY]; // Intermediate Y'(u, n)
 
-    // 계산된 중간 결과를 공유 메모리에 다시 쓰기 (다음 Pass 입력용)
-    SharedBlock[threadY][threadX] = colOutput[threadY];
-
-    GroupMemoryBarrierWithGroupSync(); // 쓰기 완료 대기
-
-    // 3. 중간 결과를 IntermediateBuffer에 쓰기 (IDCT Pass 2 입력용)
-    //    좌표는 여전히 (u, v) 기반으로 저장됨
-    uint writeX = blockX + threadX;
-    uint writeY = blockY + threadY;
+    // 3. 중간 Y' 결과를 IntermediateBuffer에 쓰기
+    uint writeX = blockX + threadX; // u
+    uint writeY = blockY + threadY; // n
     if (writeX < Width && writeY < Height)
     {
-        IntermediateBuffer[uint2(writeX, writeY)] = SharedBlock[threadY][threadX];
+        IntermediateBuffer[uint2(writeX, writeY)] = idctResultY;
     }
 }
 
 
 // ==============================================
-// IDCT Pass 2: Rows
-// IntermediateBuffer에서 행(Row) 데이터를 읽어 1D IDCT 수행 -> 최종 픽셀 값 계산
-// 스레드 그룹: 8x8
+// IDCT Pass 2: Rows (Y 처리 + CbCr 결합 + RGB 변환)
 // ==============================================
 [numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
 void IDCT_Pass2_Rows(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
 {
     uint blockX = groupID.x * BLOCK_SIZE;
     uint blockY = groupID.y * BLOCK_SIZE;
-    uint threadX = groupThreadID.x; // 최종 픽셀의 블록 내 x 좌표 역할
-    uint threadY = groupThreadID.y; // 최종 픽셀의 블록 내 y 좌표 역할
+    uint threadX = groupThreadID.x; // 최종 픽셀 x 역할
+    uint threadY = groupThreadID.y; // 최종 픽셀 y 역할
 
-    // 1. 블록의 한 행(row) 데이터를 공유 메모리로 로드
-    //    스레드는 자신의 y좌표(threadY) 행의 x좌표(threadX) 값을 IntermediateBuffer에서 로드
+    // 1. 블록의 한 행(row) 중간 Y' 데이터를 공유 메모리로 로드
     uint loadX = blockX + threadX;
     uint loadY = blockY + threadY;
     if (loadX < Width && loadY < Height)
     {
-        SharedBlock[threadY][threadX] = IntermediateBuffer.Load(int3(loadX, loadY, 0));
+        SharedBlockY[threadY][threadX] = IntermediateBuffer.Load(int3(loadX, loadY, 0)); // Load intermediate Y'
     }
     else
     {
-        SharedBlock[threadY][threadX] = 0.0f;
+        SharedBlockY[threadY][threadX] = 0.0f;
     }
 
-    GroupMemoryBarrierWithGroupSync(); // 로드 완료 대기
+    GroupMemoryBarrierWithGroupSync();
 
-    // 2. 각 스레드는 자신이 담당하는 행(threadY)에 대해 1D IDCT 수행
-    float rowInput[BLOCK_SIZE];
-    float rowOutput[BLOCK_SIZE];
-
-    // 스레드 로컬 배열에 해당 행 데이터 복사
+    // 2. 각 스레드는 담당 행(threadY)에 대해 1D IDCT 수행 (Y 채널)
+    float rowInputY[BLOCK_SIZE];
+    float rowOutputY[BLOCK_SIZE];
     for (uint i = 0; i < BLOCK_SIZE; ++i)
     {
-        rowInput[i] = SharedBlock[threadY][i]; // i = Pass1 결과의 x좌표(u), threadY = Pass1 결과의 y좌표(n 역할)
-    }
+        rowInputY[i] = SharedBlockY[threadY][i];
+    } // Get row Y'(u'=i, n=threadY)
 
-    // 1D IDCT 계산 (결과 배열의 threadX 인덱스(최종 x) 담당)
-    // 입력은 중간 결과(u, n), 출력은 최종 공간 픽셀 값(x, y)
-    IDCT_1D(rowInput, rowOutput, threadX); // rowOutput[threadX] 에 결과 저장됨 (x 역할)
+    IDCT_1D_Single(rowInputY, rowOutputY, threadX); // Calculate final Y'' (threadX is x index)
+    float finalPixelValueY = rowOutputY[threadX]; // Final reconstructed Y'' at (x, y)
 
-    // 최종 복원된 픽셀 값 (휘도)
-    float finalPixelValue = rowOutput[threadX];
-
-    // 3. 최종 픽셀 값을 IDCTOutput 텍스처에 쓰기
-    uint writeX = blockX + threadX; // 최종 픽셀 x 좌표
-    uint writeY = blockY + threadY; // 최종 픽셀 y 좌표
+    // 3. 원본 CbCr 값 로드 (ChromaBuffer 사용)
+    uint writeX = blockX + threadX; // 최종 픽셀 x
+    uint writeY = blockY + threadY; // 최종 픽셀 y
+    float2 originalCbCr = float2(0.0, 0.0);
     if (writeX < Width && writeY < Height)
     {
-        // 값 범위 클램핑 (0~1) 및 float4 변환 (그레이스케일)
-        finalPixelValue = saturate(finalPixelValue);
-        IDCTOutput[uint2(writeX, writeY)] = float4(finalPixelValue, finalPixelValue, finalPixelValue, 1.0f);
+        originalCbCr = ChromaBuffer.Load(int3(writeX, writeY, 0)); // Load original CbCr
     }
 
+    // 4. 최종 Y'' 와 원본 CbCr 결합 후 RGB 변환
+    float3 finalYCbCr = float3(finalPixelValueY, originalCbCr.x, originalCbCr.y);
+    float3 finalRGB = YCbCrToRGB(finalYCbCr);
+
+    // 5. 최종 RGB 픽셀 값을 IDCTOutput 텍스처에 쓰기
+    if (writeX < Width && writeY < Height)
+    {
+        IDCTOutput[uint2(writeX, writeY)] = float4(finalRGB.rgb, 1.0f);
+    }
 }

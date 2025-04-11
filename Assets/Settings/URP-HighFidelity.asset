@@ -23,9 +23,9 @@ MonoBehaviour:
   m_RequireOpaqueTexture: 0
   m_OpaqueDownsampling: 1
   m_SupportsTerrainHoles: 1
-  m_SupportsHDR: 0
+  m_SupportsHDR: 1
   m_HDRColorBufferPrecision: 0
-  m_MSAA: 4
+  m_MSAA: 2
   m_RenderScale: 1
   m_UpscalingFilter: 0
   m_FsrOverrideSharpness: 0
@@ -87,7 +87,7 @@ MonoBehaviour:
   m_PrefilteringModeAdditionalLightShadows: 2
   m_PrefilterXRKeywords: 1
   m_PrefilteringModeForwardPlus: 0
-  m_PrefilteringModeDeferredRendering: 0
+  m_PrefilteringModeDeferredRendering: 2
   m_PrefilteringModeScreenSpaceOcclusion: 0
   m_PrefilterDebugKeywords: 1
   m_PrefilterWriteRenderingLayers: 1

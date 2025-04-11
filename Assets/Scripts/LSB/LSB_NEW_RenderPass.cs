@@ -18,27 +18,12 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
     private LSBRenderPass lsbRenderPass;
     private byte[] cachedEncryptedData = null;
-    private bool dataLoaded = false;
 
     public override void Create()
     {
         if (lsbComputeShader == null) { /* 오류 처리 */ return; }
 
-        // 데이터 로딩 (동기 예시)
-        //try
-        //{
-        //    cachedEncryptedData = OriginBlock.LoadEncryptedDataBytesSync(addressableKey); // 동기 로딩 사용
-        //    dataLoaded = (cachedEncryptedData != null && cachedEncryptedData.Length > 0);
-        //    if (!dataLoaded) Debug.LogWarning("[LSBRenderFeature] 암호화된 데이터 로드 실패 또는 없음.");
-        //    else Debug.Log($"[LSBRenderFeature] 암호화된 데이터 로딩 완료: {cachedEncryptedData.Length} bytes");
-        //}
-        //catch (Exception ex)
-        //{
-        //    Debug.LogError($"[LSBRenderFeature] 데이터 로딩 중 오류: {ex.Message}");
-        //    cachedEncryptedData = null; dataLoaded = false;
-        //}
-
-        lsbRenderPass = new LSBRenderPass(lsbComputeShader, name, embedBitstream, cachedEncryptedData);
+        lsbRenderPass = new LSBRenderPass(lsbComputeShader, name, embedBitstream);
         lsbRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
     }
 
@@ -46,8 +31,11 @@ public class LSBRenderFeature : ScriptableRendererFeature
     {
         if (lsbComputeShader != null && lsbRenderPass != null)
         {
-            lsbRenderPass.SetEmbedActive(embedBitstream && dataLoaded);
-            renderer.EnqueuePass(lsbRenderPass);
+            lsbRenderPass.SetEmbedActive(embedBitstream);
+            if (DataManager.IsDataReady)
+            {
+                renderer.EnqueuePass(lsbRenderPass);
+            }
         }
     }
 
@@ -62,45 +50,35 @@ public class LSBRenderFeature : ScriptableRendererFeature
         private string profilerTag;
         private bool embedActive;
         private ComputeBuffer bitstreamBuffer;
-        private byte[] initialEncryptedData;
         private List<uint> payloadBits; // 헤더 포함, 패딩 전 원본 페이로드
         private List<uint> finalBitsToEmbed; // 최종 삽입될 비트 (패딩 완료)
 
         private const int THREAD_GROUP_SIZE_X = 8;
         private const int THREAD_GROUP_SIZE_Y = 8;
 
-        public LSBRenderPass(ComputeShader shader, string tag, bool initialEmbedState, byte[] encryptedData)
+        public LSBRenderPass(ComputeShader shader, string tag, bool initialEmbedState)
         {
             computeShader = shader; profilerTag = tag; embedActive = initialEmbedState;
-            initialEncryptedData = encryptedData;
             kernelID = computeShader.FindKernel("LSBEmbedKernel");
             if (kernelID < 0) Debug.LogError("Kernel LSBEmbedKernel 찾기 실패");
 
             // 초기 페이로드 구성 (헤더+데이터)
             payloadBits = new List<uint>(); // 초기화
-            if (initialEncryptedData != null && initialEncryptedData.Length > 0)
-            {
-                try
-                {
-                    // OriginBlock 클래스의 함수 사용 (프로젝트 내 OriginBlock.cs 필요)
-                    payloadBits = OriginBlock.ConstructPayloadWithHeader(initialEncryptedData);
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"[LSBRenderPass] 초기 페이로드 구성 오류: {ex.Message}");
-                }
-            }
             finalBitsToEmbed = new List<uint>();
         }
 
         public void SetEmbedActive(bool isActive) { embedActive = isActive; }
 
         private void UpdateBitstreamBuffer(List<uint> data)
-        { /* 이전 답변과 동일한 로직 */
+        { /* ... LSBRenderPass와 동일 ... */
             int count = (data != null) ? data.Count : 0;
             if (count == 0)
             {
-                if (bitstreamBuffer != null) { bitstreamBuffer.Release(); bitstreamBuffer = null; }
+                if (bitstreamBuffer != null)
+                {
+                    bitstreamBuffer.Release();
+                    bitstreamBuffer = null;
+                }
                 return;
             }
             if (bitstreamBuffer == null || bitstreamBuffer.count != count || !bitstreamBuffer.IsValid())
@@ -110,10 +88,24 @@ public class LSBRenderFeature : ScriptableRendererFeature
                 {
                     bitstreamBuffer = new ComputeBuffer(count, sizeof(uint), ComputeBufferType.Structured);
                 }
-                catch (Exception ex) { Debug.LogError($"[LSBRenderPass] ComputeBuffer 생성 실패: {ex.Message}"); bitstreamBuffer = null; return; }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[DCTRenderPass] ComputeBuffer 생성 실패: {ex.Message}");
+                    bitstreamBuffer = null;
+                    return;
+                }
             }
-            try { bitstreamBuffer.SetData(data); }
-            catch (Exception ex) { Debug.LogError($"[LSBRenderPass] ComputeBuffer SetData 오류: {ex.Message}"); bitstreamBuffer?.Release(); bitstreamBuffer = null; }
+
+            try
+            {
+                bitstreamBuffer.SetData(data);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[DCTRenderPass] ComputeBuffer SetData 오류: {ex.Message}");
+                bitstreamBuffer?.Release();
+                bitstreamBuffer = null;
+            }
         }
 
         public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
@@ -137,39 +129,46 @@ public class LSBRenderFeature : ScriptableRendererFeature
                 try
                 {
                     // 1. 헤더 포함 페이로드 구성 (OriginBlock 클래스 함수 호출)
-                    List<uint> payloadBits = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
+                    finalBitsToEmbed = payloadBits;
 
-                    if (payloadBits != null && payloadBits.Count > 0)
+                    if (payloadBits == null || payloadBits.Count == 0)
                     {
-                        int width = desc.width;
-                        int height = desc.height;
-                        int availableCapacity = width * height; // LSB 용량 = 총 픽셀 수
-                        int totalPayloadLength = payloadBits.Count; // L = Sync+Len+Data 길이
+                        payloadBits = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
+                        finalBitsToEmbed = payloadBits;
 
-                        if (availableCapacity == 0)
+                        if (payloadBits == null || payloadBits.Count == 0)
                         {
-                            Debug.LogWarning("[LSBRenderPass] 이미지 크기가 0이라 비트스트림 준비 불가.");
-                            // finalBitsToEmbed는 이미 비어있음
+                            finalBitsToEmbed = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
+                            Debug.LogError("[DCTRenderPass] 페이로드 비트가 준비되지 않았습니다.");
+                            throw new InvalidOperationException("Payload bits are not ready.");
                         }
-                        else
-                        {
-                            // 2. 자가 복제(타일링) 패딩 수행
-                            finalBitsToEmbed.Capacity = availableCapacity; // 메모리 미리 할당
-                            int currentPosition = 0;
-                            while (currentPosition < availableCapacity)
-                            {
-                                int remainingSpace = availableCapacity - currentPosition;
-                                int countToAdd = Math.Min(totalPayloadLength, remainingSpace);
-                                if (countToAdd <= 0 || totalPayloadLength == 0) break;
-                                finalBitsToEmbed.AddRange(payloadBits.GetRange(0, countToAdd));
-                                currentPosition += countToAdd;
-                            }
-                            // Debug.Log($"[LSBRenderPass] 자가 복제 패딩 완료. 최종 크기: {finalBitsToEmbed.Count} / 용량: {availableCapacity}");
-                        }
+                    }
+
+                    
+                    int width = desc.width;
+                    int height = desc.height;
+                    int availableCapacity = width * height; // LSB 용량 = 총 픽셀 수
+                    int totalPayloadLength = payloadBits.Count; // L = Sync+Len+Data 길이
+
+                    if (availableCapacity == 0)
+                    {
+                        Debug.LogWarning("[LSBRenderPass] 이미지 크기가 0이라 비트스트림 준비 불가.");
+                        // finalBitsToEmbed는 이미 비어있음
                     }
                     else
                     {
-                        Debug.LogError("[LSBRenderPass] 페이로드 구성 실패 (ConstructPayloadWithHeader 결과 없음).");
+                        // 2. 자가 복제(타일링) 패딩 수행
+                        finalBitsToEmbed.Capacity = availableCapacity; // 메모리 미리 할당
+                        int currentPosition = 0;
+                        while (currentPosition < availableCapacity)
+                        {
+                            int remainingSpace = availableCapacity - currentPosition;
+                            int countToAdd = Math.Min(totalPayloadLength, remainingSpace);
+                            if (countToAdd <= 0 || totalPayloadLength == 0) break;
+                            finalBitsToEmbed.AddRange(payloadBits.GetRange(0, countToAdd));
+                            currentPosition += countToAdd;
+                        }
+                        // Debug.Log($"[LSBRenderPass] 자가 복제 패딩 완료. 최종 크기: {finalBitsToEmbed.Count} / 용량: {availableCapacity}");
                     }
                 }
                 catch (Exception ex)
@@ -186,7 +185,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
                 if (!DataManager.IsDataReady && embedActive)
                 {
                     // 데이터 로딩이 아직 안 끝났을 수 있음 (경고 로깅은 선택사항)
-                    // Debug.LogWarning("[LSBRenderPass] 데이터가 아직 준비되지 않아 임베딩을 건너<0xEB><0x91>니다.");
+                    Debug.LogWarning("[LSBRenderPass] 데이터가 아직 준비되지 않아 임베딩을 건너<0xEB><0x91>니다.");
                 }
             }
 
@@ -209,6 +208,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
                 if (shouldEmbed)
                 {
+                    Debug.Log($"[LSBRenderPass] 비트스트림 준비 완료. 비트 수: {currentBitLength}");
                     cmd.SetComputeBufferParam(computeShader, kernelID, "Bitstream", bitstreamBuffer);
                     cmd.SetComputeIntParam(computeShader, "BitLength", currentBitLength);
                     cmd.SetComputeIntParam(computeShader, "Embed", 1);
@@ -216,6 +216,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
                 else
                 {
                     // 데이터 미준비, 버퍼 오류, 임베딩 비활성화 등 모든 경우 Embed=0
+                    Debug.LogWarning($"[LSBRenderPass] 비트스트림 준비 안됨. Embed=0");
                     cmd.SetComputeIntParam(computeShader, "BitLength", 0);
                     cmd.SetComputeIntParam(computeShader, "Embed", 0);
                     // UpdateBitstreamBuffer(null) 이 호출되어 bitstreamBuffer가 null일 수 있음
@@ -231,6 +232,12 @@ public class LSBRenderFeature : ScriptableRendererFeature
         {
             if (kernelID < 0) return;
             // Optional: Check buffer validity again if needed
+            if (embedActive && (bitstreamBuffer == null || !bitstreamBuffer.IsValid()) || !DataManager.IsDataReady)
+            {
+                Debug.LogWarning("[LSBRenderPass] Embed 활성화 상태이나 ComputeBuffer 유효하지 않음. 혹은 데이터가 로딩 되지 않음");
+                return; // 선택적: 실행 중단
+            }
+
 
             CommandBuffer cmd = CommandBufferPool.Get(profilerTag);
             var cameraTarget = renderingData.cameraData.renderer.cameraColorTargetHandle;
