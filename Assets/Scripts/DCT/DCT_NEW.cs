@@ -3,7 +3,9 @@ using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using System.Collections.Generic;
 using System.Linq;
-using System; // Math.Min 사용
+using System;
+using Unity.Collections;
+using System.IO; // Math.Min 사용
 
 // OriginBlock 클래스가 동일 프로젝트 내에 정의되어 있다고 가정
 
@@ -13,10 +15,16 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
     public ComputeShader dctComputeShader; // DCT용 최적화된 .compute 파일 할당
     [Tooltip("DCT 계수에 비트스트림을 임베딩할지 여부")]
     public bool embedBitstream = true;
-    [Tooltip("QIM 스텝 크기")]
-    public float qimDelta = 0.05f;
+
     [Tooltip("Addressables에서 로드할 암호화된 데이터 키")]
     public string addressableKey = "OriginBlockData";
+    [Header("DCT 설정")]
+    [Tooltip("QIM 스텝 크기")]
+    public float qimDelta = 0.05f;
+    [Tooltip("UV")]
+    public int uIndex = 4;
+    public int vIndex = 4;
+
 
     private DCTRenderPass_Optimized dctRenderPass;
 
@@ -34,7 +42,8 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
         if (dctComputeShader != null && dctRenderPass != null )
         {
             dctRenderPass.SetEmbedActive(embedBitstream);
-            if(DataManager.IsDataReady)
+            dctRenderPass.SetuvIndex(uIndex, vIndex);
+            if (DataManager.IsDataReady)
             {
                 renderer.EnqueuePass(dctRenderPass);
             }
@@ -43,10 +52,9 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
 
     protected override void Dispose(bool disposing) { dctRenderPass?.Cleanup(); }
 
-
-    // --- DCTRenderPass 내부 클래스 (최적화 버전) ---
     class DCTRenderPass_Optimized : ScriptableRenderPass
-    {
+    { 
+
         private ComputeShader computeShader;
         private int dctPass1KernelID, dctPass2KernelID, idctPass1KernelID, idctPass2KernelID;
         private RTHandle sourceTextureHandle, intermediateHandle, dctOutputHandle, idctOutputHandle, chromaBufferHandle;
@@ -57,7 +65,12 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
         private List<uint> payloadBits; // 헤더 포함, 패딩 전 원본 페이로드
         private List<uint> finalBitsToEmbed; // 최종 삽입될 비트 (패딩 완료)
 
+        private bool isReadbackPending = false;
+
         private float qimDelta; // QIM 스텝 크기 (셰이더에서 사용됨)
+        private int uIndex; // u 인덱스
+        private int vIndex; // v 인덱스
+
         private const int BLOCK_SIZE = 8; // DCT 블록 크기
 
         public DCTRenderPass_Optimized(ComputeShader shader, string tag, bool initialEmbedState, float qimDelta)
@@ -76,6 +89,7 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
         }
 
         public void SetEmbedActive(bool isActive) { embedActive = isActive; }
+        public void SetuvIndex(int u, int v) { uIndex = u; vIndex = v; }
 
         private void UpdateBitstreamBuffer(List<uint> data)
         { /* ... LSBRenderPass와 동일 ... */
@@ -215,6 +229,23 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
                 }
             }
 
+            // --- ★★★ 디버깅 로그 추가: 최종 페이로드 앞부분 출력 ★★★ ---
+            if (finalBitsToEmbed != null && finalBitsToEmbed.Count > 0)
+            {
+                int logLength = Math.Min(finalBitsToEmbed.Count, 60); // 최대 60개 비트 출력
+                // Linq 사용 (파일 상단에 using System.Linq; 추가 필요)
+                string first50Bits = string.Join("", finalBitsToEmbed.Take(logLength).Select(b => b.ToString()));
+                // 콘솔에 처음 50개 비트와 총 길이 출력
+                Debug.Log($"[DCTRenderPass] Shader로 전달될 최종 비트 (처음 {logLength}개): {first50Bits}");
+                Debug.Log($"[DCTRenderPass] 최종 비트 총 길이 (currentBitLength): {finalBitsToEmbed.Count}");
+            }
+            else
+            {
+                // finalBitsToEmbed가 비어있는 경우 로그
+                Debug.LogWarning("[DCTRenderPass] finalBitsToEmbed가 비어있음. 셰이더로 전달될 페이로드 없음.");
+            }
+            // --- ★★★ 디버깅 로그 끝 ★★★ ---
+
             // 최종 비트스트림으로 ComputeBuffer 업데이트 (데이터 없으면 버퍼 해제됨)
             UpdateBitstreamBuffer(finalBitsToEmbed);
 
@@ -228,6 +259,8 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
             // 공통 파라미터 (모든 커널에 설정 필요할 수 있음 - 확인 필요)
             cmd.SetComputeIntParam(computeShader, "Width", desc.width);
             cmd.SetComputeIntParam(computeShader, "Height", desc.height);
+            cmd.SetComputeIntParam(computeShader, "uIndex", uIndex);
+            cmd.SetComputeIntParam(computeShader, "vIndex", vIndex);
             cmd.SetComputeFloatParam(computeShader, "QIM_DELTA", qimDelta);
 
             // 각 커널 텍스처 바인딩 (기존과 동일)
@@ -280,6 +313,8 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
                 return; // 선택적: 실행 중단
             }
 
+
+            
             CommandBuffer cmd = CommandBufferPool.Get(profilerTag);
             var cameraTarget = renderingData.cameraData.renderer.cameraColorTargetHandle;
             int width = cameraTarget.rt.width;
@@ -297,8 +332,82 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
                 cmd.DispatchCompute(computeShader, idctPass2KernelID, threadGroupsX, threadGroupsY, 1);
                 cmd.Blit(idctOutputHandle,  cameraTarget);
             }
+
+            if (SaveTrigger.SaveRequested && !isReadbackPending)
+            {
+                isReadbackPending = true; // 중복 요청 방지 (이 패스 인스턴스 내에서)
+                SaveTrigger.SaveRequested = false; // 요청 플래그 즉시 리셋 (다른 프레임에서 처리 못하게)
+
+                Debug.Log("RenderPass starting AsyncGPUReadback Request...");
+
+                // ★ 최종 결과가 담긴 cameraTarget 또는 idctOutputHandle 사용 ★
+                // 어떤 것을 읽을지는 최종 쓰기 작업에 따라 결정
+                // 여기서는 cameraTarget을 읽는다고 가정 (CopyTexture/Blit 이후)
+                var targetToRead = cameraTarget.rt;
+                // 또는 var targetToRead = idctOutputHandle.rt; (Copy/Blit 하기 전 핸들)
+
+                if (targetToRead != null && targetToRead.IsCreated())
+                {
+                    // 요청 시 포맷은 반드시 Float 계열로!
+                    // ★ 콜백 함수는 static 또는 싱글턴 객체의 메서드여야 함 ★
+                    AsyncGPUReadback.Request(targetToRead, 0, TextureFormat.RGBAFloat, OnCompleteReadback_Static);
+                }
+                else
+                {
+                    Debug.LogError("Async Readback source texture is invalid!");
+                    isReadbackPending = false; // 실패 시 플래그 리셋
+                }
+            }
+
             context.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);
+        }
+
+        // --- ★★★ Static 콜백 함수 (이전과 동일, 클래스 내부에 static으로 선언) ★★★ ---
+        // (주의: 이 함수는 Render Pass 인스턴스 변수에 직접 접근 불가)
+        private static bool staticIsCallbackProcessing = false; // 콜백 동시 처리 방지
+        static void OnCompleteReadback_Static(AsyncGPUReadbackRequest request)
+        {
+            // 간단한 락으로 동시 처리 방지
+            if (staticIsCallbackProcessing)
+            {
+                Debug.LogWarning("Previous readback callback still processing.");
+                return;
+            }
+            staticIsCallbackProcessing = true;
+
+            Debug.Log("Static Async GPU Readback 완료.");
+            if (request.hasError) { Debug.LogError("GPU Readback 실패!"); }
+            else if (request.done) // 완료되었는지 다시 확인
+            {
+                // Texture2D 생성 (RGBAFloat)
+                Texture2D texture = new Texture2D(request.width, request.height, TextureFormat.RGBAFloat, false);
+                try
+                {
+                    NativeArray<float> data = request.GetData<float>();
+                    if (data.Length > 0 && data.Length == request.width * request.height * 4)
+                    {
+                        texture.SetPixelData(data, 0);
+                        texture.Apply(false);
+
+                        byte[] bytes = texture.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat);
+                        // 파일 이름은 static 변수에서 가져옴
+                        string savePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), SaveTrigger.SaveFileName);
+                        File.WriteAllBytes(savePath, bytes);
+                        Debug.Log($"이미지 저장 성공 (Static CB): {savePath}");
+                    }
+                    else { Debug.LogError($"Readback data size mismatch! Got {data.Length}"); }
+                }
+                catch (Exception e) { Debug.LogError($"데이터 처리/저장 실패 (Static CB): {e.Message}\n{e.StackTrace}"); }
+                finally
+                {
+                    if (texture != null) Destroy(texture); // Texture2D 정리
+                }
+            }
+            // 이 패스 인스턴스의 isReadbackPending을 여기서 false로 바꿀 수 없음 (static이므로)
+            // 따라서 InputController에서 SaveRequested를 다시 true로 만들기 전에 약간의 딜레이가 필요할 수 있음
+            // 혹은 콜백 완료 이벤트 같은 것을 구현
+            staticIsCallbackProcessing = false; // 처리 완료
         }
 
         public override void OnCameraCleanup(CommandBuffer cmd) { }

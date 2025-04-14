@@ -3,7 +3,9 @@ using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using System.Collections.Generic;
 using System.Linq;
-using System; // Math.Min 사용
+using System;
+using Unity.Collections;
+using System.IO; // Math.Min 사용
 
 // OriginBlock 클래스가 동일 프로젝트 내에 정의되어 있다고 가정
 
@@ -52,6 +54,8 @@ public class LSBRenderFeature : ScriptableRendererFeature
         private ComputeBuffer bitstreamBuffer;
         private List<uint> payloadBits; // 헤더 포함, 패딩 전 원본 페이로드
         private List<uint> finalBitsToEmbed; // 최종 삽입될 비트 (패딩 완료)
+
+        private bool isReadbackPending = false;
 
         private const int THREAD_GROUP_SIZE_X = 8;
         private const int THREAD_GROUP_SIZE_Y = 8;
@@ -128,47 +132,42 @@ public class LSBRenderFeature : ScriptableRendererFeature
                 // 데이터가 준비되었으므로 페이로드 구성 및 패딩 시도
                 try
                 {
-                    // 1. 헤더 포함 페이로드 구성 (OriginBlock 클래스 함수 호출)
-                    finalBitsToEmbed = payloadBits;
+                    // 1. DataManager에서 직접 원본 페이로드 구성
+                    List<uint> currentPayload = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
 
-                    if (payloadBits == null || payloadBits.Count == 0)
+                    // 2. 구성 결과 확인
+                    if (currentPayload == null || currentPayload.Count == 0)
                     {
-                        payloadBits = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
-                        finalBitsToEmbed = payloadBits;
-
-                        if (payloadBits == null || payloadBits.Count == 0)
-                        {
-                            finalBitsToEmbed = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
-                            Debug.LogError("[DCTRenderPass] 페이로드 비트가 준비되지 않았습니다.");
-                            throw new InvalidOperationException("Payload bits are not ready.");
-                        }
-                    }
-
-                    
-                    int width = desc.width;
-                    int height = desc.height;
-                    int availableCapacity = width * height; // LSB 용량 = 총 픽셀 수
-                    int totalPayloadLength = payloadBits.Count; // L = Sync+Len+Data 길이
-
-                    if (availableCapacity == 0)
-                    {
-                        Debug.LogWarning("[LSBRenderPass] 이미지 크기가 0이라 비트스트림 준비 불가.");
-                        // finalBitsToEmbed는 이미 비어있음
+                        Debug.LogWarning("[DCTRenderPass] 원본 페이로드 구성 실패 또는 데이터 없음.");
+                        // finalBitsToEmbed는 이미 Clear()된 상태이므로 더 할 것 없음
                     }
                     else
                     {
-                        // 2. 자가 복제(타일링) 패딩 수행
-                        finalBitsToEmbed.Capacity = availableCapacity; // 메모리 미리 할당
-                        int currentPosition = 0;
-                        while (currentPosition < availableCapacity)
+                        // 3. 패딩 로직 수행 (currentPayload를 원본으로 사용)
+                        int width = desc.width;
+                        int height = desc.height;
+                        int availableCapacity = width * height;
+                        int totalPayloadLength = currentPayload.Count; // <- currentPayload 사용
+
+                        if (availableCapacity == 0)
                         {
-                            int remainingSpace = availableCapacity - currentPosition;
-                            int countToAdd = Math.Min(totalPayloadLength, remainingSpace);
-                            if (countToAdd <= 0 || totalPayloadLength == 0) break;
-                            finalBitsToEmbed.AddRange(payloadBits.GetRange(0, countToAdd));
-                            currentPosition += countToAdd;
+                            Debug.LogWarning("[DCTRenderPass] 이미지 크기가 작아 블록 생성 불가.");
                         }
-                        // Debug.Log($"[LSBRenderPass] 자가 복제 패딩 완료. 최종 크기: {finalBitsToEmbed.Count} / 용량: {availableCapacity}");
+                        else
+                        {
+                            finalBitsToEmbed.Clear(); // 패딩 전에 확실히 비우기
+                            finalBitsToEmbed.Capacity = availableCapacity;
+                            int currentPosition = 0;
+                            while (currentPosition < availableCapacity)
+                            {
+                                int remainingSpace = availableCapacity - currentPosition;
+                                int countToAdd = Math.Min(totalPayloadLength, remainingSpace);
+                                if (countToAdd <= 0) break; // totalPayloadLength가 0인 경우 포함
+                                finalBitsToEmbed.AddRange(currentPayload.GetRange(0, countToAdd)); // <- currentPayload 사용
+                                currentPosition += countToAdd;
+                            }
+                            // Debug.Log($"[DCTRenderPass] 패딩 완료. 최종 크기: {finalBitsToEmbed.Count}");
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -206,25 +205,14 @@ public class LSBRenderFeature : ScriptableRendererFeature
                 cmd.SetComputeIntParam(computeShader, "Width", desc.width);
                 cmd.SetComputeIntParam(computeShader, "Height", desc.height);
 
-                if (shouldEmbed)
+                // Bitstream 버퍼 설정은 유효할 때만 (shouldEmbed 조건 대신 bufferValid 사용)
+                if (bufferValid && currentBitLength > 0) // 버퍼가 실제로 유효할 때만 바인딩 시도
                 {
-                    Debug.Log($"[LSBRenderPass] 비트스트림 준비 완료. 비트 수: {currentBitLength}");
                     cmd.SetComputeBufferParam(computeShader, kernelID, "Bitstream", bitstreamBuffer);
-                    cmd.SetComputeIntParam(computeShader, "BitLength", currentBitLength);
-                    cmd.SetComputeIntParam(computeShader, "Embed", 1);
                 }
-                else
-                {
-                    // 데이터 미준비, 버퍼 오류, 임베딩 비활성화 등 모든 경우 Embed=0
-                    Debug.LogWarning($"[LSBRenderPass] 비트스트림 준비 안됨. Embed=0");
-                    cmd.SetComputeIntParam(computeShader, "BitLength", 0);
-                    cmd.SetComputeIntParam(computeShader, "Embed", 0);
-                    // UpdateBitstreamBuffer(null) 이 호출되어 bitstreamBuffer가 null일 수 있음
-                    // 이 경우 SetComputeBufferParam을 호출하지 않는 것이 더 안전할 수 있으나,
-                    // Embed=0 이면 셰이더 내에서 접근하지 않으므로 일반적으로는 문제 없음.
-                    // 만약을 위해 null 체크 후 바인딩 해제 고려 가능:
-                    // if (bitstreamBuffer == null) { /* 필요시 이전 바인딩 해제 로직 */ }
-                }
+                // Embed 관련 파라미터는 항상 설정 (셰이더가 Embed 값 보고 처리하도록)
+                cmd.SetComputeIntParam(computeShader, "BitLength", shouldEmbed ? currentBitLength : 0);
+                cmd.SetComputeIntParam(computeShader, "Embed", shouldEmbed ? 1 : 0);
             }
         }
 
@@ -253,8 +241,83 @@ public class LSBRenderFeature : ScriptableRendererFeature
                 cmd.DispatchCompute(computeShader, kernelID, threadGroupsX, threadGroupsY, 1); // Dispatch
                 cmd.CopyTexture(outputTextureHandle, cameraTarget); // Copy result back
             }
+
+            if (SaveTrigger.SaveRequested && !isReadbackPending)
+            {
+                isReadbackPending = true; // 중복 요청 방지 (이 패스 인스턴스 내에서)
+                SaveTrigger.SaveRequested = false; // 요청 플래그 즉시 리셋 (다른 프레임에서 처리 못하게)
+
+                Debug.Log("RenderPass starting AsyncGPUReadback Request...");
+
+                // ★ 최종 결과가 담긴 cameraTarget 또는 idctOutputHandle 사용 ★
+                // 어떤 것을 읽을지는 최종 쓰기 작업에 따라 결정
+                // 여기서는 cameraTarget을 읽는다고 가정 (CopyTexture/Blit 이후)
+                var targetToRead = cameraTarget.rt;
+                // 또는 var targetToRead = idctOutputHandle.rt; (Copy/Blit 하기 전 핸들)
+
+                if (targetToRead != null && targetToRead.IsCreated())
+                {
+                    // 요청 시 포맷은 반드시 Float 계열로!
+                    // ★ 콜백 함수는 static 또는 싱글턴 객체의 메서드여야 함 ★
+                    AsyncGPUReadback.Request(targetToRead, 0, TextureFormat.RGBAFloat, OnCompleteReadback_Static);
+                }
+                else
+                {
+                    Debug.LogError("Async Readback source texture is invalid!");
+                    isReadbackPending = false; // 실패 시 플래그 리셋
+                }
+            }
+
             context.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);
+        }
+
+
+        // --- ★★★ Static 콜백 함수 (이전과 동일, 클래스 내부에 static으로 선언) ★★★ ---
+        // (주의: 이 함수는 Render Pass 인스턴스 변수에 직접 접근 불가)
+        private static bool staticIsCallbackProcessing = false; // 콜백 동시 처리 방지
+        static void OnCompleteReadback_Static(AsyncGPUReadbackRequest request)
+        {
+            // 간단한 락으로 동시 처리 방지
+            if (staticIsCallbackProcessing)
+            {
+                Debug.LogWarning("Previous readback callback still processing.");
+                return;
+            }
+            staticIsCallbackProcessing = true;
+
+            Debug.Log("Static Async GPU Readback 완료.");
+            if (request.hasError) { Debug.LogError("GPU Readback 실패!"); }
+            else if (request.done) // 완료되었는지 다시 확인
+            {
+                // Texture2D 생성 (RGBAFloat)
+                Texture2D texture = new Texture2D(request.width, request.height, TextureFormat.RGBAFloat, false);
+                try
+                {
+                    NativeArray<float> data = request.GetData<float>();
+                    if (data.Length > 0 && data.Length == request.width * request.height * 4)
+                    {
+                        texture.SetPixelData(data, 0);
+                        texture.Apply(false);
+
+                        byte[] bytes = texture.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat);
+                        // 파일 이름은 static 변수에서 가져옴
+                        string savePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), SaveTrigger.SaveFileName);
+                        File.WriteAllBytes(savePath, bytes);
+                        Debug.Log($"이미지 저장 성공 (Static CB): {savePath}");
+                    }
+                    else { Debug.LogError($"Readback data size mismatch! Got {data.Length}"); }
+                }
+                catch (Exception e) { Debug.LogError($"데이터 처리/저장 실패 (Static CB): {e.Message}\n{e.StackTrace}"); }
+                finally
+                {
+                    if (texture != null) Destroy(texture); // Texture2D 정리
+                }
+            }
+            // 이 패스 인스턴스의 isReadbackPending을 여기서 false로 바꿀 수 없음 (static이므로)
+            // 따라서 InputController에서 SaveRequested를 다시 true로 만들기 전에 약간의 딜레이가 필요할 수 있음
+            // 혹은 콜백 완료 이벤트 같은 것을 구현
+            staticIsCallbackProcessing = false; // 처리 완료
         }
 
         public override void OnCameraCleanup(CommandBuffer cmd) { }

@@ -17,6 +17,10 @@ float QIM_DELTA; // 양자화 스텝 크기 (C#에서 설정)
 uint Width;
 uint Height;
 
+// uv 좌표
+uint uIndex;
+uint vIndex;
+
 // --- 입출력 텍스처 ---
 Texture2D<float4> Source; // 원본 이미지 (float4)
 RWTexture2D<float> IntermediateBuffer; // ★★★ CHANGED: 중간 Y 버퍼 (float) ★★★
@@ -171,7 +175,7 @@ void DCT_Pass2_Cols(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, 
         uint u = threadX;
         uint v = threadY;
         // 예시: C_Y(4, 4) 계수에만 비트 숨김 (★실제 적용 시 범위 확장 필요★)
-        if (u == 4 && v == 4)
+        if (u == uIndex && v == vIndex)
         {
             uint blockLinearIndex = groupID.y * (Width / BLOCK_SIZE) + groupID.x;
             if (blockLinearIndex < BitLength)
