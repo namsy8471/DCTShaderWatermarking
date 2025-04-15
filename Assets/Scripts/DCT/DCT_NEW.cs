@@ -39,6 +39,10 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
+        var camera = renderingData.cameraData.camera;
+
+        if (camera.cameraType != CameraType.Game) { return; } // 게임 카메라가 아닐 경우 패스
+
         if (dctComputeShader != null && dctRenderPass != null )
         {
             dctRenderPass.SetEmbedActive(embedBitstream);
@@ -138,16 +142,15 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
             var desc = renderingData.cameraData.cameraTargetDescriptor;
             desc.depthBufferBits = 0;
             desc.msaaSamples = 1;
+            desc.sRGB = false; // Linear이기 때문에 sRGB 비활성화
 
             // RTHandle 할당 (기존과 동일)
             var intermediateDesc = desc; 
             intermediateDesc.colorFormat = RenderTextureFormat.RFloat;
-            intermediateDesc.sRGB = false; 
             intermediateDesc.enableRandomWrite = true;
 
             var chromaDesc = desc; // CbCr 저장용
             chromaDesc.colorFormat = RenderTextureFormat.RGFloat; // ★★★ CbCr은 float2 (RG32_SFloat) ★★★
-            chromaDesc.sRGB = false;
             chromaDesc.enableRandomWrite = true; // Pass1에서 쓰기 위함
 
             var idctDesc = desc;
@@ -232,7 +235,7 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
             // --- ★★★ 디버깅 로그 추가: 최종 페이로드 앞부분 출력 ★★★ ---
             if (finalBitsToEmbed != null && finalBitsToEmbed.Count > 0)
             {
-                int logLength = Math.Min(finalBitsToEmbed.Count, 60); // 최대 60개 비트 출력
+                int logLength = Math.Min(finalBitsToEmbed.Count, 1536); // 최대 60개 비트 출력
                 // Linq 사용 (파일 상단에 using System.Linq; 추가 필요)
                 string first50Bits = string.Join("", finalBitsToEmbed.Take(logLength).Select(b => b.ToString()));
                 // 콘솔에 처음 50개 비트와 총 길이 출력
@@ -331,7 +334,10 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
                 cmd.DispatchCompute(computeShader, idctPass1KernelID, threadGroupsX, threadGroupsY, 1);
                 cmd.DispatchCompute(computeShader, idctPass2KernelID, threadGroupsX, threadGroupsY, 1);
                 cmd.Blit(idctOutputHandle,  cameraTarget);
+
+                RTResultHolder.DedicatedSaveTarget = cameraTarget;
             }
+
 
             if (SaveTrigger.SaveRequested && !isReadbackPending)
             {
@@ -343,14 +349,16 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
                 // ★ 최종 결과가 담긴 cameraTarget 또는 idctOutputHandle 사용 ★
                 // 어떤 것을 읽을지는 최종 쓰기 작업에 따라 결정
                 // 여기서는 cameraTarget을 읽는다고 가정 (CopyTexture/Blit 이후)
-                var targetToRead = cameraTarget.rt;
                 // 또는 var targetToRead = idctOutputHandle.rt; (Copy/Blit 하기 전 핸들)
+
+                var targetToRead = RTResultHolder.DedicatedSaveTarget.rt;
 
                 if (targetToRead != null && targetToRead.IsCreated())
                 {
                     // 요청 시 포맷은 반드시 Float 계열로!
                     // ★ 콜백 함수는 static 또는 싱글턴 객체의 메서드여야 함 ★
                     AsyncGPUReadback.Request(targetToRead, 0, TextureFormat.RGBAFloat, OnCompleteReadback_Static);
+                    isReadbackPending = false;
                 }
                 else
                 {
@@ -363,8 +371,7 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
             CommandBufferPool.Release(cmd);
         }
 
-        // --- ★★★ Static 콜백 함수 (이전과 동일, 클래스 내부에 static으로 선언) ★★★ ---
-        // (주의: 이 함수는 Render Pass 인스턴스 변수에 직접 접근 불가)
+        // --- ★★★ 수정된 Static 콜백 함수 (PNG, EXR 동시 저장) ★★★ ---
         private static bool staticIsCallbackProcessing = false; // 콜백 동시 처리 방지
         static void OnCompleteReadback_Static(AsyncGPUReadbackRequest request)
         {
@@ -376,38 +383,81 @@ public class DCTRenderFeature_Optimized : ScriptableRendererFeature
             }
             staticIsCallbackProcessing = true;
 
-            Debug.Log("Static Async GPU Readback 완료.");
-            if (request.hasError) { Debug.LogError("GPU Readback 실패!"); }
-            else if (request.done) // 완료되었는지 다시 확인
+            Debug.Log("Static Async GPU Readback 완료. PNG/EXR 저장 시도...");
+            if (request.hasError)
             {
-                // Texture2D 생성 (RGBAFloat)
-                Texture2D texture = new Texture2D(request.width, request.height, TextureFormat.RGBAFloat, false);
-                try
-                {
-                    NativeArray<float> data = request.GetData<float>();
-                    if (data.Length > 0 && data.Length == request.width * request.height * 4)
-                    {
-                        texture.SetPixelData(data, 0);
-                        texture.Apply(false);
-
-                        byte[] bytes = texture.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat);
-                        // 파일 이름은 static 변수에서 가져옴
-                        string savePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), SaveTrigger.SaveFileName);
-                        File.WriteAllBytes(savePath, bytes);
-                        Debug.Log($"이미지 저장 성공 (Static CB): {savePath}");
-                    }
-                    else { Debug.LogError($"Readback data size mismatch! Got {data.Length}"); }
-                }
-                catch (Exception e) { Debug.LogError($"데이터 처리/저장 실패 (Static CB): {e.Message}\n{e.StackTrace}"); }
-                finally
-                {
-                    if (texture != null) Destroy(texture); // Texture2D 정리
-                }
+                Debug.LogError("GPU Readback 실패!");
+                staticIsCallbackProcessing = false;
+                return;
             }
-            // 이 패스 인스턴스의 isReadbackPending을 여기서 false로 바꿀 수 없음 (static이므로)
-            // 따라서 InputController에서 SaveRequested를 다시 true로 만들기 전에 약간의 딜레이가 필요할 수 있음
-            // 혹은 콜백 완료 이벤트 같은 것을 구현
-            staticIsCallbackProcessing = false; // 처리 완료
+            if (!request.done)
+            {
+                Debug.LogWarning("GPU Readback not done?");
+                staticIsCallbackProcessing = false;
+                return;
+            }
+
+            // --- 데이터 읽기 (Float) ---
+            NativeArray<float> floatData = request.GetData<float>();
+            int width = request.width;
+            int height = request.height;
+            int expectedFloatLength = width * height * 4; // RGBAFloat
+
+            if (floatData.Length != expectedFloatLength)
+            {
+                Debug.LogError($"Readback float data size mismatch! Expected: {expectedFloatLength}, Got: {floatData.Length}");
+                staticIsCallbackProcessing = false;
+                return;
+            }
+            // NativeArray는 콜백 이후 유효하지 않을 수 있으므로, 필요 시 데이터 복사
+            // 여기서는 각 저장 로직 내에서 직접 사용
+            Debug.Log($"Float data read successfully ({floatData.Length} floats).");
+
+            // --- Raw Binary 저장 ---
+            try
+            {
+                float[] floatArray = floatData.ToArray(); // NativeArray -> managed array
+                byte[] rawBytes = new byte[floatArray.Length * sizeof(float)];
+                Buffer.BlockCopy(floatArray, 0, rawBytes, 0, rawBytes.Length); // float 배열을 byte 배열로 복사
+
+                string baseNameBin = Path.GetFileNameWithoutExtension(SaveTrigger.SaveFileName);
+                // 파일명에 메타데이터 포함 (width x height x channels, dtype)
+                string binFileName = $"{baseNameBin}_{width}x{height}x4_float32.bin";
+                string binSavePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), binFileName);
+                File.WriteAllBytes(binSavePath, rawBytes);
+                Debug.Log($"<color=orange>[Callback] Raw Binary 저장 성공:</color> {binSavePath}");
+            }
+            catch (Exception e) { Debug.LogError($"[Callback] Raw Binary 저장 실패: {e.Message}"); }
+
+
+            // --- 1. EXR 저장 ---
+            Texture2D texFloat = null; // try-finally 위해 미리 선언
+            try
+            {
+                texFloat = new Texture2D(width, height, TextureFormat.RGBAFloat, false);
+                texFloat.SetPixelData(floatData, 0); // float 데이터 직접 로드
+                texFloat.Apply(false);
+
+                byte[] exrBytes = texFloat.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat);
+
+                // 파일 이름에 "_Float" 추가 및 확장자 .exr
+                string baseName = Path.GetFileNameWithoutExtension(SaveTrigger.SaveFileName);
+                string exrFileName = baseName + "_Float.exr";
+                string exrSavePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), exrFileName);
+
+                File.WriteAllBytes(exrSavePath, exrBytes);
+                Debug.Log($"<color=green>EXR 이미지 저장 성공:</color> {exrSavePath}");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"EXR 저장 실패: {e.Message}\n{e.StackTrace}");
+            }
+            finally
+            {
+                if (texFloat != null) Destroy(texFloat); // 사용한 텍스처 정리
+            }
+
+            staticIsCallbackProcessing = false; // 모든 처리 완료
         }
 
         public override void OnCameraCleanup(CommandBuffer cmd) { }

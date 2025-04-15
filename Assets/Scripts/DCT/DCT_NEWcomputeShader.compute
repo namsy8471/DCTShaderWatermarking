@@ -116,9 +116,9 @@ void DCT_Pass1_Rows(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, 
     // 2. Y 채널에 대해 1D DCT 수행
     float rowInputY[BLOCK_SIZE];
     float rowOutputY[BLOCK_SIZE];
-    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    for (uint j = 0; j < BLOCK_SIZE; ++j)
     {
-        rowInputY[i] = ycbcr[i].x;
+        rowInputY[j] = ycbcr[j].x;
     } // Extract Y channel
 
     DCT_1D_Single(rowInputY, rowOutputY, threadX); // Calculate 1D DCT for Y (threadX is k index)

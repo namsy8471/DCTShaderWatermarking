@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 118da7909a36c7648b60d13550f6d087, type: 3}
   m_Name: LSBRenderFeature
   m_EditorClassIdentifier: 
-  m_Active: 1
+  m_Active: 0
   lsbComputeShader: {fileID: 7200000, guid: 2691d7ee8c623fc439873daa7cff5aac, type: 3}
   embedBitstream: 1
   addressableKey: OriginBlockData
@@ -75,11 +75,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c795dda60fd94d049a84aa71d8ca608c, type: 3}
   m_Name: DCTRenderFeatureOptimized
   m_EditorClassIdentifier: 
-  m_Active: 0
+  m_Active: 1
   dctComputeShader: {fileID: 7200000, guid: cbfaad5dcbaf5614595a14f8c0cfcff7, type: 3}
   embedBitstream: 1
   addressableKey: OriginBlockData
-  qimDelta: 5
+  qimDelta: 0.05
   uIndex: 4
   vIndex: 4
 --- !u!114 &-1878332245247344467

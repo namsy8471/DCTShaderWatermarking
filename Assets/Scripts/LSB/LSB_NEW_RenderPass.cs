@@ -31,6 +31,9 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
+        var camera = renderingData.cameraData.camera;
+        if (camera.cameraType != CameraType.Game) { return; } // 게임 카메라가 아닐 경우 패스
+
         if (lsbComputeShader != null && lsbRenderPass != null)
         {
             lsbRenderPass.SetEmbedActive(embedBitstream);
@@ -115,8 +118,12 @@ public class LSBRenderFeature : ScriptableRendererFeature
         public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
         {
             var desc = renderingData.cameraData.cameraTargetDescriptor;
-            desc.depthBufferBits = 0; desc.msaaSamples = 1;
-            var outputDesc = desc; outputDesc.enableRandomWrite = true;
+            desc.depthBufferBits = 0; 
+            desc.msaaSamples = 1;
+            desc.sRGB = false; // sRGB 비활성화
+
+            var outputDesc = desc;
+            outputDesc.enableRandomWrite = true;
 
             RenderingUtils.ReAllocateIfNeeded(ref sourceTextureHandle, desc, FilterMode.Point, TextureWrapMode.Clamp, name: "_SourceCopyForLSB");
             RenderingUtils.ReAllocateIfNeeded(ref outputTextureHandle, outputDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "_LSBOutput");
@@ -240,31 +247,30 @@ public class LSBRenderFeature : ScriptableRendererFeature
                 int threadGroupsY = Mathf.CeilToInt((float)height / THREAD_GROUP_SIZE_Y);
                 cmd.DispatchCompute(computeShader, kernelID, threadGroupsX, threadGroupsY, 1); // Dispatch
                 cmd.CopyTexture(outputTextureHandle, cameraTarget); // Copy result back
+
+                RTResultHolder.DedicatedSaveTarget = cameraTarget;
             }
 
+            // Execute 메서드 내 AsyncGPUReadback 요청 부분 수정
             if (SaveTrigger.SaveRequested && !isReadbackPending)
             {
-                isReadbackPending = true; // 중복 요청 방지 (이 패스 인스턴스 내에서)
-                SaveTrigger.SaveRequested = false; // 요청 플래그 즉시 리셋 (다른 프레임에서 처리 못하게)
+                isReadbackPending = true;
+                SaveTrigger.SaveRequested = false;
 
-                Debug.Log("RenderPass starting AsyncGPUReadback Request...");
+                Debug.Log("[LSBRenderPass] Starting AsyncGPUReadback Request (Requesting RGBA32)..."); // 로그 수정
 
-                // ★ 최종 결과가 담긴 cameraTarget 또는 idctOutputHandle 사용 ★
-                // 어떤 것을 읽을지는 최종 쓰기 작업에 따라 결정
-                // 여기서는 cameraTarget을 읽는다고 가정 (CopyTexture/Blit 이후)
-                var targetToRead = cameraTarget.rt;
-                // 또는 var targetToRead = idctOutputHandle.rt; (Copy/Blit 하기 전 핸들)
+                var targetToRead = RTResultHolder.DedicatedSaveTarget.rt;
 
                 if (targetToRead != null && targetToRead.IsCreated())
                 {
-                    // 요청 시 포맷은 반드시 Float 계열로!
-                    // ★ 콜백 함수는 static 또는 싱글턴 객체의 메서드여야 함 ★
-                    AsyncGPUReadback.Request(targetToRead, 0, TextureFormat.RGBAFloat, OnCompleteReadback_Static);
+                    // ★ 요청 포맷을 TextureFormat.RGBA32 로 변경 ★
+                    // ★ 콜백 함수도 RGBA32 처리용으로 변경 ★
+                    AsyncGPUReadback.Request(targetToRead, 0, TextureFormat.RGBA32, OnCompleteReadback_RGBA32_Static);
                 }
                 else
                 {
-                    Debug.LogError("Async Readback source texture is invalid!");
-                    isReadbackPending = false; // 실패 시 플래그 리셋
+                    Debug.LogError("[LSBRenderPass] Async Readback source texture is invalid!");
+                    isReadbackPending = false;
                 }
             }
 
@@ -272,53 +278,88 @@ public class LSBRenderFeature : ScriptableRendererFeature
             CommandBufferPool.Release(cmd);
         }
 
-
-        // --- ★★★ Static 콜백 함수 (이전과 동일, 클래스 내부에 static으로 선언) ★★★ ---
-        // (주의: 이 함수는 Render Pass 인스턴스 변수에 직접 접근 불가)
-        private static bool staticIsCallbackProcessing = false; // 콜백 동시 처리 방지
-        static void OnCompleteReadback_Static(AsyncGPUReadbackRequest request)
+        private static bool staticIsCallbackProcessing_TGA = false; // TGA 처리용 락 변수
+        // --- ★★★ RGBA32 Readback 후 TGA 저장 콜백 함수 ★★★ ---
+        static void OnCompleteReadback_RGBA32_Static(AsyncGPUReadbackRequest request)
         {
-            // 간단한 락으로 동시 처리 방지
-            if (staticIsCallbackProcessing)
+            // 락 처리
+            if (staticIsCallbackProcessing_TGA)
             {
-                Debug.LogWarning("Previous readback callback still processing.");
+                Debug.LogWarning("[LSBRenderPass] Previous TGA readback callback still processing.");
                 return;
             }
-            staticIsCallbackProcessing = true;
+            staticIsCallbackProcessing_TGA = true;
 
-            Debug.Log("Static Async GPU Readback 완료.");
-            if (request.hasError) { Debug.LogError("GPU Readback 실패!"); }
-            else if (request.done) // 완료되었는지 다시 확인
+            Debug.Log("[LSBRenderPass] Static Async GPU Readback (RGBA32 for TGA) 완료. TGA 저장 시도..."); // 로그 수정
+
+            // 요청 상태 확인 (에러, 완료 여부)
+            if (request.hasError || !request.done)
             {
-                // Texture2D 생성 (RGBAFloat)
-                Texture2D texture = new Texture2D(request.width, request.height, TextureFormat.RGBAFloat, false);
-                try
-                {
-                    NativeArray<float> data = request.GetData<float>();
-                    if (data.Length > 0 && data.Length == request.width * request.height * 4)
-                    {
-                        texture.SetPixelData(data, 0);
-                        texture.Apply(false);
-
-                        byte[] bytes = texture.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat);
-                        // 파일 이름은 static 변수에서 가져옴
-                        string savePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), SaveTrigger.SaveFileName);
-                        File.WriteAllBytes(savePath, bytes);
-                        Debug.Log($"이미지 저장 성공 (Static CB): {savePath}");
-                    }
-                    else { Debug.LogError($"Readback data size mismatch! Got {data.Length}"); }
-                }
-                catch (Exception e) { Debug.LogError($"데이터 처리/저장 실패 (Static CB): {e.Message}\n{e.StackTrace}"); }
-                finally
-                {
-                    if (texture != null) Destroy(texture); // Texture2D 정리
-                }
+                Debug.LogError($"[LSBRenderPass] GPU Readback (RGBA32 for TGA) 실패! HasError={request.hasError}, IsDone={request.done}");
+                staticIsCallbackProcessing_TGA = false;
+                return;
             }
-            // 이 패스 인스턴스의 isReadbackPending을 여기서 false로 바꿀 수 없음 (static이므로)
-            // 따라서 InputController에서 SaveRequested를 다시 true로 만들기 전에 약간의 딜레이가 필요할 수 있음
-            // 혹은 콜백 완료 이벤트 같은 것을 구현
-            staticIsCallbackProcessing = false; // 처리 완료
-        }
+
+            // --- 데이터 읽기 (Byte) ---
+            NativeArray<byte> byteData = request.GetData<byte>();
+            int width = request.width;
+            int height = request.height;
+            int expectedByteLength = width * height * 4; // RGBA32 = 4 bytes per pixel
+
+            if (byteData.Length != expectedByteLength)
+            {
+                Debug.LogError($"[LSBRenderPass] Readback RGBA32 data size mismatch! Expected: {expectedByteLength}, Got: {byteData.Length}");
+                staticIsCallbackProcessing_TGA = false;
+                return;
+            }
+            Debug.Log($"[LSBRenderPass] RGBA32 data read successfully ({byteData.Length} bytes) for TGA saving.");
+
+            // --- TGA 저장 로직 ---
+            Texture2D texForTga = null; // try-finally 위해 미리 선언
+            try
+            {
+                // 1. Texture2D 생성 (RGBA32 포맷)
+                texForTga = new Texture2D(width, height, TextureFormat.RGBA32, false);
+
+                // 2. 읽어온 바이트 데이터 로드
+                texForTga.LoadRawTextureData(byteData);
+                texForTga.Apply(false); // 변경사항 적용 (mipmap 생성 안 함)
+
+                // 3. TGA 바이트 배열로 인코딩
+                byte[] tgaBytes = texForTga.EncodeToTGA();
+                if (tgaBytes == null)
+                {
+                    // EncodeToTGA는 실패 시 null 반환 가능성 있음 (문서상 명확하진 않으나 방어 코드)
+                    throw new Exception("Texture2D.EncodeToTGA() failed, returned null.");
+                }
+
+                // 4. 파일 경로 설정 및 저장
+                // SaveTrigger.SaveFileName 은 파일명.확장자 형태라고 가정 (예: "MyImage.png")
+                string baseName = Path.GetFileNameWithoutExtension(SaveTrigger.SaveFileName); // 예: "MyImage"
+                string tgaFileName = baseName + "_LSB.tga"; // ★★★ 파일명 및 확장자 변경 ★★★
+                string tgaSavePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), tgaFileName); // 바탕화면에 저장 예시
+
+                File.WriteAllBytes(tgaSavePath, tgaBytes);
+                Debug.Log($"<color=lime>[LSBRenderPass] TGA 이미지 저장 성공:</color> {tgaSavePath}"); // 성공 로그 색상 변경
+
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[LSBRenderPass] TGA 저장 실패: {e.Message}\n{e.StackTrace}");
+            }
+            finally
+            {
+                // 사용한 Texture2D 객체 메모리 정리
+                if (texForTga != null)
+                {
+                    // 콜백 함수는 메인 스레드에서 실행될 가능성이 높으므로 Destroy 사용 가능
+                    // (만약 다른 스레드라면 DestroyImmediate 사용 필요할 수도 있으나, AsyncGPUReadback 콜백은 보통 메인 스레드)
+                    UnityEngine.Object.Destroy(texForTga);
+                }
+                // 락 해제
+                staticIsCallbackProcessing_TGA = false;
+            }
+        } // --- 콜백 함수 끝 ---
 
         public override void OnCameraCleanup(CommandBuffer cmd) { }
         public void Cleanup()
