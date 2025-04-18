@@ -82,7 +82,7 @@ MonoBehaviour:
   qimDelta: 0.05
   uIndex: 4
   vIndex: 4
---- !u!114 &-1878332245247344467
+--- !u!114 &-1898557105666974581
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -91,32 +91,16 @@ MonoBehaviour:
   m_GameObject: {fileID: 0}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: f62c9c65cf3354c93be831c8bc075510, type: 3}
-  m_Name: SSAO
+  m_Script: {fileID: 11500000, guid: d0ac30626b392934abc5a6396c3c2051, type: 3}
+  m_Name: TruncatedSVDRenderFeature
   m_EditorClassIdentifier: 
   m_Active: 0
-  m_Settings:
-    AOMethod: 1
-    Downsample: 0
-    AfterOpaque: 0
-    Source: 1
-    NormalSamples: 1
-    Intensity: 0.5
-    DirectLightingStrength: 0.25
-    Radius: 0.25
-    Samples: 0
-    BlurQuality: 0
-    Falloff: 100
-    SampleCount: -1
-  m_BlueNoise256Textures:
-  - {fileID: 2800000, guid: 36f118343fc974119bee3d09e2111500, type: 3}
-  - {fileID: 2800000, guid: 4b7b083e6b6734e8bb2838b0b50a0bc8, type: 3}
-  - {fileID: 2800000, guid: c06cc21c692f94f5fb5206247191eeee, type: 3}
-  - {fileID: 2800000, guid: cb76dd40fa7654f9587f6a344f125c9a, type: 3}
-  - {fileID: 2800000, guid: e32226222ff144b24bf3a5a451de54bc, type: 3}
-  - {fileID: 2800000, guid: 3302065f671a8450b82c9ddf07426f3a, type: 3}
-  - {fileID: 2800000, guid: 56a77a3e8d64f47b6afe9e3c95cb57d5, type: 3}
-  m_Shader: {fileID: 4800000, guid: 0849e84e3d62649e8882e9d6f056a017, type: 3}
+  truncatedSvdComputeShader: {fileID: 7200000, guid: e8c0b3a118930af4ba7bb00bca92d64c,
+    type: 3}
+  jacobiIterations: 0
+  modifySingularValues: 1
+  modificationValue: 0.01
+  sigmaThreshold: 0.000001
 --- !u!114 &-1848536006085162829
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -148,12 +132,13 @@ MonoBehaviour:
       type: 3}
     hdrDebugViewPS: {fileID: 4800000, guid: 573620ae32aec764abd4d728906d2587, type: 3}
   m_RendererFeatures:
-  - {fileID: -1878332245247344467}
   - {fileID: 6690638146467207930}
   - {fileID: -9011381159908791362}
   - {fileID: -2744157322982174075}
-  m_RendererFeatureMap: adc0de57c6d2eee5fa1adb18f2ebd95cbe2bfd539424f1828552dc3374cbead9
-  m_UseNativeRenderPass: 0
+  - {fileID: 5314289574967262510}
+  - {fileID: -1898557105666974581}
+  m_RendererFeatureMap: fa1adb18f2ebd95cbe2bfd539424f1828552dc3374cbead92e3d7c4d3626c0498b1ced125ff8a6e5
+  m_UseNativeRenderPass: 1
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
   xrSystemData: {fileID: 11400000, guid: 60e1133243b97e347b653163a8c01b64, type: 2}
   shaders:
@@ -201,6 +186,22 @@ MonoBehaviour:
   m_CopyDepthMode: 0
   m_AccurateGbufferNormals: 0
   m_IntermediateTextureMode: 1
+--- !u!114 &5314289574967262510
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c0c4f9821605096438e921c88e059b5f, type: 3}
+  m_Name: DWTRenderFeature
+  m_EditorClassIdentifier: 
+  m_Active: 0
+  dwtComputeShader: {fileID: 7200000, guid: 4e0c9574917727a44a4a9448018df1df, type: 3}
+  embedBitstream: 1
+  addressableKey: OriginBlockData
 --- !u!114 &6690638146467207930
 MonoBehaviour:
   m_ObjectHideFlags: 0

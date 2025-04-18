@@ -1,0 +1,458 @@
+﻿#pragma kernel ConvertRGBToY        // RGB -> Y 추출
+#pragma kernel StoreCbCr            // RGB -> CbCr 저장
+#pragma kernel ComputeAtA_8x8       // A^T A 계산
+#pragma kernel Eigendecomposition_AtA_8x8 // A^T A 고유값 분해 -> V, Sigma 계산 (*** 핵심 ***)
+#pragma kernel ComputeU_8x8         // u_i = A*v_i / sigma_i 계산
+#pragma kernel ModifySigma          // (선택적) 특이값 수정
+#pragma kernel ReconstructY_FromSVD // U, Sigma, V 로부터 Y 재구성
+#pragma kernel CombineYAndCbCr_ToRGB// 최종 RGB 결합
+
+// --- 공통 설정 ---
+#define BLOCK_SIZE 8
+#define BLOCK_SIZE_FLOAT 8.0f
+#define PI 3.14159265359f
+#define EPSILON 1.0e-7f // 작은 값
+
+// --- 전역 변수 (C#에서 설정) ---
+uint Width;
+uint Height;
+uint JacobiIterations; // 고유값 분해 반복 횟수
+float ModificationValue; // 특이값 수정 시 사용
+float SigmaThreshold; // U 계산 시 0 나누기 방지용 sigma 임계값
+
+// --- 텍스처/버퍼 정의 (C#과 일치) ---
+// 읽기용
+Texture2D<float4> SourceReader;
+Texture2D<float> SourceYReader_AtA; // A^T A 계산용 Y 입력
+Texture2D<float> SourceYReader_U; // U 계산용 Y 입력
+Texture2D<float> AtAReader; // A^T A 읽기용 (고유값 분해 입력)
+Texture2D<float> MatrixVReader_U; // U 계산용 V 입력
+Texture2D<float> SingularValuesReader_U; // U 계산용 Sigma 입력
+Texture2D<float> MatrixUReader; // 재구성용 U 입력
+Texture2D<float> MatrixVReader; // 재구성용 V 입력
+Texture2D<float> SingularValuesReader; // 재구성/수정용 Sigma 입력
+Texture2D<float> ReconstructedYReader; // 최종 결합용 Y 입력
+Texture2D<float2> ChromaBufferReader; // 최종 결합용 CbCr 입력
+
+// 쓰기용 (RWTexture)
+RWTexture2D<float> SourceYWriter;
+RWTexture2D<float2> ChromaBufferWriter;
+RWTexture2D<float> AtAWriter; // A^T A 행렬 (8x8 저장)
+RWTexture2D<float> MatrixVWriter; // V 행렬 (8x8 저장)
+RWTexture2D<float> SingularValuesWriter; // Sigma (8개 값 저장, 8x1 영역)
+RWTexture2D<float> MatrixUWriter; // U 행렬 (8x8 저장)
+RWTexture2D<float> ReconstructedYWriter;
+RWTexture2D<float4> FinalRGBWriter;
+
+// 수정용 (입출력 동일)
+RWTexture2D<float> SingularValues; // ModifySigma 커널용
+
+// --- 공유 메모리 ---
+groupshared float SharedA[BLOCK_SIZE][BLOCK_SIZE]; // Y 블록 또는 임시 행렬 저장
+groupshared float SharedAtA[BLOCK_SIZE][BLOCK_SIZE]; // A^T A 저장
+groupshared float SharedV[BLOCK_SIZE][BLOCK_SIZE]; // V (고유벡터) 저장
+groupshared float SharedU[BLOCK_SIZE][BLOCK_SIZE]; // U 저장
+groupshared float SharedSigma[BLOCK_SIZE]; // Sigma 저장
+groupshared float SharedAv[BLOCK_SIZE]; // A*v_i 계산용 임시
+
+// --- 색 공간 변환 함수 ---
+float3 RGBToYCbCr(float3 rgb)
+{
+    float y = 0.299f * rgb.r + 0.587f * rgb.g + 0.114f * rgb.b;
+    float cb = -0.169f * rgb.r - 0.331f * rgb.g + 0.500f * rgb.b;
+    float cr = 0.500f * rgb.r - 0.419f * rgb.g - 0.081f * rgb.b;
+    return float3(y, cb, cr);
+}
+
+float3 YCbCrToRGB(float3 ycbcr)
+{
+    float r = ycbcr.x + 1.402f * ycbcr.z;
+    float g = ycbcr.x - 0.344f * ycbcr.y - 0.714f * ycbcr.z;
+    float b = ycbcr.x + 1.772f * ycbcr.y;
+    return saturate(float3(r, g, b));
+}
+
+
+// --- 유틸리티 함수 ---
+// Jacobi 회전 적용 (대칭 행렬 고유값 분해용)
+// M = R^T * M * R
+void ApplyJacobiRotationSymm(inout float M[BLOCK_SIZE][BLOCK_SIZE], float c, float s, uint p, uint q, uint threadID)
+{
+    // 각 스레드는 한 열(또는 행) 담당
+    float mp = M[threadID][p]; // threadID 행의 p열
+    float mq = M[threadID][q]; // threadID 행의 q열
+    M[threadID][p] = c * mp - s * mq;
+    M[threadID][q] = s * mp + c * mq;
+
+    GroupMemoryBarrierWithGroupSync(); // 열 업데이트 완료 대기
+
+    mp = M[p][threadID]; // p 행의 threadID열
+    mq = M[q][threadID]; // q 행의 threadID열
+    M[p][threadID] = c * mp - s * mq;
+    M[q][threadID] = s * mp + c * mq;
+
+    GroupMemoryBarrierWithGroupSync(); // 행 업데이트 완료 대기
+}
+
+// 고유벡터 행렬 V 업데이트 (V_new = V_old * R)
+void UpdateEigenvectors(inout float V[BLOCK_SIZE][BLOCK_SIZE], float c, float s, uint p, uint q, uint threadID)
+{
+    // 각 스레드는 한 행 담당
+    float vp = V[threadID][p]; // threadID 행의 p열
+    float vq = V[threadID][q]; // threadID 행의 q열
+    V[threadID][p] = c * vp - s * vq;
+    V[threadID][q] = s * vp + c * vq;
+
+    GroupMemoryBarrierWithGroupSync(); // 업데이트 완료 대기
+}
+
+
+// =========================================
+// Kernels 1 & 2: ConvertRGBToY, StoreCbCr (이전과 동일)
+// =========================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void ConvertRGBToY(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= Width || id.y >= Height)
+        return;
+    float3 rgb = SourceReader.Load(int3(id.x, id.y, 0)).rgb;
+    float y = RGBToYCbCr(rgb).x;
+    SourceYWriter[id.xy] = y;
+}
+
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void StoreCbCr(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= Width || id.y >= Height)
+        return;
+    float3 rgb = SourceReader.Load(int3(id.x, id.y, 0)).rgb;
+    float2 cbcr = RGBToYCbCr(rgb).yz;
+    ChromaBufferWriter[id.xy] = cbcr;
+}
+
+
+// =========================================
+// Kernel 3: Compute A^T A for 8x8 block
+// =========================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void ComputeAtA_8x8(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    uint blockX = groupID.x * BLOCK_SIZE;
+    uint blockY = groupID.y * BLOCK_SIZE;
+    uint threadX = groupThreadID.x; // 결과 AtA의 열 인덱스 j
+    uint threadY = groupThreadID.y; // 결과 AtA의 행 인덱스 i
+
+    // 1. Load Y block into SharedA
+    uint loadX = blockX + threadX;
+    uint loadY = blockY + threadY;
+     // 모든 스레드가 각자 위치의 Y값을 로드해야 함 -> 로드 방식 변경 필요
+     // 각 스레드가 A의 한 요소를 SharedA에 로드
+    if (loadX < Width && loadY < Height)
+    {
+        SharedA[threadY][threadX] = SourceYReader_AtA.Load(int3(loadX, loadY, 0));
+    }
+    else
+    {
+        SharedA[threadY][threadX] = 0.0f; // Padding
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    // 2. Compute AtA[i, j] = sum_k A[k, i] * A[k, j]
+    // 각 스레드는 결과 AtA[threadY, threadX] 하나를 계산
+    float sum = 0.0f;
+    for (uint k = 0; k < BLOCK_SIZE; ++k)
+    {
+        sum += SharedA[k][threadY] * SharedA[k][threadX]; // A^T * A
+    }
+    SharedAtA[threadY][threadX] = sum; // 임시로 공유 메모리에 저장
+
+    GroupMemoryBarrierWithGroupSync(); // 모든 AtA 요소 계산 완료 대기
+
+    // 3. Write result to AtAWriter (8x8 영역)
+    if (loadX < Width && loadY < Height)
+    { // 전역 좌표 사용
+        AtAWriter[uint2(loadX, loadY)] = SharedAtA[threadY][threadX];
+    }
+}
+
+// ===========================================================
+// Kernel 4: Eigendecomposition of A^T A (Symmetric Jacobi)
+// -> Output: V (Eigenvectors), Sigma (Singular Values)
+// ===========================================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void Eigendecomposition_AtA_8x8(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    uint blockX = groupID.x * BLOCK_SIZE;
+    uint blockY = groupID.y * BLOCK_SIZE;
+    uint threadX = groupThreadID.x;
+    uint threadY = groupThreadID.y;
+
+    // 1. Load AtA block into SharedAtA
+    uint loadX = blockX + threadX;
+    uint loadY = blockY + threadY;
+    if (loadX < Width && loadY < Height)
+    {
+        SharedAtA[threadY][threadX] = AtAReader.Load(int3(loadX, loadY, 0));
+    }
+    else
+    {
+        SharedAtA[threadY][threadX] = (threadX == threadY) ? 1.0f : 0.0f; // Padding? Identity?
+    }
+
+    // 2. Initialize V in shared memory to identity
+    SharedV[threadY][threadX] = (threadX == threadY) ? 1.0f : 0.0f;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 3. Symmetric Jacobi Iterations
+    for (int iter = 0; iter < JacobiIterations; ++iter)
+    {
+        float max_off_diag = 0.0f; // 수렴 체크용 (선택적)
+
+        for (uint p = 0; p < BLOCK_SIZE - 1; ++p)
+        {
+            for (uint q = p + 1; q < BLOCK_SIZE; ++q)
+            {
+                // Calculate rotation to zero SharedAtA[p][q]
+                float apq = SharedAtA[p][q];
+                // max_off_diag = max(max_off_diag, abs(apq)); // 수렴 체크
+
+                if (abs(apq) < EPSILON)
+                    continue; // 이미 0에 가까우면 스킵
+
+                float app = SharedAtA[p][p];
+                float aqq = SharedAtA[q][q];
+                float tau = (aqq - app) / (2.0f * apq);
+                float t = sign(tau) / (abs(tau) + sqrt(1.0f + tau * tau));
+                float c = 1.0f / sqrt(1.0f + t * t); // cos(theta)
+                float s = t * c; // sin(theta)
+
+                // Apply rotation to SharedAtA (M = R^T * M * R)
+                ApplyJacobiRotationSymm(SharedAtA, c, s, p, q, threadY); // threadY 전달
+
+                // Accumulate rotation in SharedV (V_new = V_old * R)
+                UpdateEigenvectors(SharedV, c, s, p, q, threadY); // threadY 전달
+            }
+        }
+        // if (max_off_diag < threshold) break; // 수렴 시 조기 종료 (선택적)
+        GroupMemoryBarrierWithGroupSync(); // 반복 종료 전 동기화
+    }
+
+    // 4. Results:
+    // Eigenvalues (lambda_i) are on the diagonal of SharedAtA
+    // Eigenvectors (v_i) are the columns of SharedV
+
+    // 5. Calculate Singular Values (sigma = sqrt(lambda)) and write Sigma & V
+    // Write Sigma (8 values) to SingularValuesWriter (8x1 area)
+    if (threadX == 0)
+    { // 각 행의 첫 스레드가 담당
+        uint sigma_idx = threadY; // 행 인덱스 = 시그마 인덱스
+        float lambda = SharedAtA[sigma_idx][sigma_idx];
+        float sigma = sqrt(max(0.0f, lambda)); // 음수 방지
+
+        uint writeX_sigma = blockX + sigma_idx; // 8x1 영역
+        uint writeY_sigma = blockY;
+        if (writeX_sigma < Width && writeY_sigma < Height)
+        {
+            SingularValuesWriter[uint2(writeX_sigma, writeY_sigma)] = sigma;
+        }
+    }
+
+    // Write V matrix (8x8) to MatrixVWriter
+    if (loadX < Width && loadY < Height)
+    {
+        MatrixVWriter[uint2(loadX, loadY)] = SharedV[threadY][threadX];
+    }
+}
+
+
+// =====================================================
+// Kernel 5: Compute U using u_i = A*v_i / sigma_i
+// =====================================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void ComputeU_8x8(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    uint blockX = groupID.x * BLOCK_SIZE;
+    uint blockY = groupID.y * BLOCK_SIZE;
+    uint threadX = groupThreadID.x; // U의 열 인덱스 j (v_j, sigma_j 사용)
+    uint threadY = groupThreadID.y; // U의 행 인덱스 i (u_i 계산 시 행 담당)
+
+    // 1. Load Y block (A), V matrix, Sigma into shared memory
+    // Load Y (A)
+    uint loadX = blockX + threadX;
+    uint loadY = blockY + threadY;
+    if (loadX < Width && loadY < Height)
+    {
+        SharedA[threadY][threadX] = SourceYReader_U.Load(int3(loadX, loadY, 0));
+        SharedV[threadY][threadX] = MatrixVReader_U.Load(int3(loadX, loadY, 0)); // V 로드
+    }
+    else
+    {
+        SharedA[threadY][threadX] = 0.0f;
+        SharedV[threadY][threadX] = (threadX == threadY) ? 1.0f : 0.0f;
+    }
+    // Load Sigma (thread 0 행만 로드)
+    if (threadY == 0 && threadX < BLOCK_SIZE)
+    {
+        uint readX_sigma = blockX + threadX;
+        uint readY_sigma = blockY;
+        if (readX_sigma < Width && readY_sigma < Height)
+        {
+            SharedSigma[threadX] = SingularValuesReader_U.Load(int3(readX_sigma, readY_sigma, 0));
+        }
+        else
+        {
+            SharedSigma[threadX] = 0.0f;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    // 2. Compute Av_j for each column j of V
+    // 각 스레드는 결과 U의 (threadY, threadX) 요소를 계산
+    // U[i, j] = ( sum_k A[i, k] * V[k, j] ) / sigma_j
+
+    float sigma_j = SharedSigma[threadX]; // 이 스레드가 계산할 U 열에 해당하는 시그마 값
+    float sum_Avj_i = 0.0f; // A*v_j 결과의 i번째(threadY) 요소
+
+    for (uint k = 0; k < BLOCK_SIZE; ++k)
+    {
+        sum_Avj_i += SharedA[threadY][k] * SharedV[k][threadX];
+    }
+
+    // 3. Compute U[i, j] = Av_j[i] / sigma_j (handle division by zero)
+    float u_ij = 0.0f;
+    if (sigma_j > SigmaThreshold)
+    { // 임계값보다 클 때만 나누기
+        u_ij = sum_Avj_i / sigma_j;
+    }
+    SharedU[threadY][threadX] = u_ij; // 결과 임시 저장
+
+    GroupMemoryBarrierWithGroupSync(); // 모든 U 요소 계산 완료 대기
+
+    // 4. Write U matrix to MatrixUWriter
+    if (loadX < Width && loadY < Height)
+    {
+        MatrixUWriter[uint2(loadX, loadY)] = SharedU[threadY][threadX];
+    }
+}
+
+// =========================================
+// Kernel 6: ModifySigma (특이값 수정/임베딩)
+// =========================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void ModifySigma(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    // 특이값은 8x1 영역에 저장되어 있다고 가정
+    uint blockX_base = groupID.x * BLOCK_SIZE;
+    uint blockY_base = groupID.y; // y는 블록 인덱스 자체가 y좌표
+    uint threadX = groupThreadID.x; // 
+    uint threadY = groupThreadID.y; // 
+    
+    uint sigma_idx = threadX; // 0~7
+    if (threadY == 0 && sigma_idx < BLOCK_SIZE) // 첫 행 스레드들이 각 특이값 담당
+    {
+        uint readX_sigma = blockX_base + sigma_idx;
+        uint readY_sigma = blockY_base;
+
+        if (readX_sigma < Width && readY_sigma < Height)
+        {
+            float sigma = SingularValues.Load(int3(readX_sigma, readY_sigma, 0));
+
+            // 수정 로직 예시: 임계값 이하면 0으로 (압축)
+            sigma = (sigma >= ModificationValue) ? sigma : 0.0f;
+
+            // 수정 로직 예시: 임베딩 (단순 LSB - 비추천)
+            // uint bit_index = groupID.y * numBlocksX + groupID.x; // 블록 선형 인덱스
+            // uint bit_to_embed = ModificationData[bit_index];
+            // sigma = (bit_to_embed == 1) ? abs(sigma) : -abs(sigma); // 부호 변경 등
+
+            // 수정된 특이값 다시 쓰기
+            SingularValues[uint2(readX_sigma, readY_sigma)] = sigma;
+        }
+    }
+}
+
+// 1. 해당 블록의 U, Sigma, V 데이터 로드 (공유 메모리 사용)
+groupshared float localU[BLOCK_SIZE][BLOCK_SIZE];
+groupshared float localSigma[BLOCK_SIZE]; // 대각 행렬의 대각 요소만 저장
+groupshared float localV[BLOCK_SIZE][BLOCK_SIZE];
+
+// =========================================
+// Kernel 7: U, Sigma, V 로부터 Y 재구성
+// =========================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void ReconstructY_FromSVD(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    
+    
+    uint blockX = groupID.x * BLOCK_SIZE;
+    uint blockY = groupID.y * BLOCK_SIZE;
+    uint threadX = groupThreadID.x; // 최종 픽셀 x (블록 내)
+    uint threadY = groupThreadID.y; // 최종 픽셀 y (블록 내)
+
+    // U, V 로드 (8x8 픽셀 영역에서)
+    uint loadX = blockX + threadX;
+    uint loadY = blockY + threadY;
+    if (loadX < Width && loadY < Height)
+    {
+        localU[threadY][threadX] = MatrixUReader.Load(int3(loadX, loadY, 0));
+        localV[threadY][threadX] = MatrixVReader.Load(int3(loadX, loadY, 0));
+    }
+    else
+    {
+        localU[threadY][threadX] = (threadX == threadY) ? 1.0f : 0.0f; // 패딩은 단위 행렬?
+        localV[threadY][threadX] = (threadX == threadY) ? 1.0f : 0.0f;
+    }
+
+    // Sigma 로드 (8x1 픽셀 영역에서)
+    if (threadY == 0 && threadX < BLOCK_SIZE)
+    { // 첫 행 스레드들이 로드
+        uint readX_sigma = blockX + threadX;
+        uint readY_sigma = blockY; // 저장 방식에 맞춰 y좌표 사용
+        if (readX_sigma < Width && readY_sigma < Height)
+        {
+            localSigma[threadX] = SingularValuesReader.Load(int3(readX_sigma, readY_sigma, 0));
+        }
+        else
+        {
+            localSigma[threadX] = 0.0f; // 패딩
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync(); // 로드 완료 대기
+
+    // 2. Y_recon = U * Sigma * V^T 계산
+    // Y_recon[i,j] = sum_k ( (U[i,k] * Sigma[k]) * V[j,k] )  (V^T 이므로 V의 k행 j열 -> V[j,k])
+
+    float reconY = 0.0f;
+    for (uint k = 0; k < BLOCK_SIZE; ++k)
+    {
+        reconY += (localU[threadY][k] * localSigma[k]) * localV[threadX][k];
+    }
+
+    // 3. 계산된 재구성 Y 값을 출력 텍스처에 쓰기
+    if (loadX < Width && loadY < Height)
+    { // loadX, loadY 는 전역 좌표
+        ReconstructedYWriter[uint2(loadX, loadY)] = reconY;
+    }
+}
+
+// =========================================
+// Kernel 8: CombineYAndCbCr_ToRGB (재구성된 Y 와 원본 CbCr 결합 -> 최종 RGB)
+// =========================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void CombineYAndCbCr_ToRGB(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= Width || id.y >= Height)
+        return;
+
+    // 재구성된 Y 와 원본 CbCr 읽기
+    float y = ReconstructedYReader.Load(int3(id.x, id.y, 0));
+    float2 cbcr = ChromaBufferReader.Load(int3(id.x, id.y, 0));
+
+    // YCbCr -> RGB 변환
+    float3 rgb = YCbCrToRGB(float3(y, cbcr.x, cbcr.y));
+
+    // 최종 RGB 쓰기
+    FinalRGBWriter[id.xy] = float4(rgb, 1.0f);
+}

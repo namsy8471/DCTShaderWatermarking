@@ -1,0 +1,357 @@
+﻿#pragma kernel DWT_Pass1_Rows           // Y 채널 Row DWT + CbCr 저장
+#pragma kernel DWT_Pass2_Cols_Embed   // Y 채널 Column DWT + Bitstream 임베딩 (HH 계수)
+#pragma kernel IDWT_Pass1_Cols         // Y 채널 Column IDWT
+#pragma kernel IDWT_Pass2_Rows         // Y 채널 Row IDWT + CbCr 결합 + RGB 변환
+
+// --- 공통 설정 ---
+#define BLOCK_SIZE 8           // Haar DWT는 2의 거듭제곱 크기 블록에서 효율적
+#define BLOCK_SIZE_FLOAT 8.0f
+#define HALF_BLOCK_SIZE (BLOCK_SIZE / 2)
+
+// --- DWT 관련 상수 ---
+// Haar 웨이블릿 스케일링 (정규화 방식에 따라 다름, 여기선 sqrt(2) 사용 안함)
+#define HAAR_SCALE 0.5f // (a+b)/2, (a-b)/2 방식 사용 시
+
+// --- 텍스처 크기 ---
+uint Width;
+uint Height;
+
+// --- 입출력 텍스처 (C#과 이름/포맷 일치 확인) ---
+Texture2D<float4> Source; // 원본 RGB (float4)
+RWTexture2D<float> IntermediateYBuffer; // 중간 Y' 저장 (float) - 행 DWT 결과 또는 열 IDWT 결과
+RWTexture2D<float> DWTOutputY; // 최종 Y DWT 계수 저장 (float) - LL, LH, HL, HH 순서 가정
+RWTexture2D<float2> ChromaBuffer; // 원본 CbCr 저장 (float2)
+RWTexture2D<float4> IDWTOutput; // 최종 복원 RGB (float4)
+
+// --- Bitstream 관련 입력 (Pass 2에서 사용) ---
+StructuredBuffer<uint> Bitstream; // uint 형 비트 배열
+uint BitLength; // 실제 비트스트림 길이
+uint Embed; // 0: 비활성, 1: 활성
+
+// --- 공유 메모리 ---
+// 각 패스에서 1D 변환을 위해 사용
+groupshared float SharedBlockY[BLOCK_SIZE][BLOCK_SIZE];
+
+// --- 색 공간 변환 함수 (BT.601 기준, DCT 예제와 동일) ---
+float3 RGBToYCbCr(float3 rgb)
+{
+    float y = 0.299f * rgb.r + 0.587f * rgb.g + 0.114f * rgb.b;
+    float cb = -0.169f * rgb.r - 0.331f * rgb.g + 0.500f * rgb.b; // Range -0.5 to 0.5
+    float cr = 0.500f * rgb.r - 0.419f * rgb.g - 0.081f * rgb.b; // Range -0.5 to 0.5
+    return float3(y, cb, cr);
+}
+
+float3 YCbCrToRGB(float3 ycbcr)
+{
+    float r = ycbcr.x + 1.402f * ycbcr.z; // y + 1.402 * Cr
+    float g = ycbcr.x - 0.344f * ycbcr.y - 0.714f * ycbcr.z; // y - 0.344 * Cb - 0.714 * Cr
+    float b = ycbcr.x + 1.772f * ycbcr.y; // y + 1.772 * Cb
+    return saturate(float3(r, g, b)); // [0, 1] 범위 클램핑
+}
+
+
+// --- 1D Haar DWT 함수 (In-Place 방식, 1 레벨) ---
+// 입력: data (길이 BLOCK_SIZE), 출력: data 배열에 직접 덮어씀
+// 결과: data[0..HALF_BLOCK_SIZE-1] = 평균(Approx), data[HALF_BLOCK_SIZE..BLOCK_SIZE-1] = 차이(Detail)
+void Haar_DWT_1D_InPlace(float data[BLOCK_SIZE])
+{
+    float temp[BLOCK_SIZE]; // 임시 저장 공간
+
+    // DWT 레벨 1 수행 (Haar)
+    for (uint i = 0; i < HALF_BLOCK_SIZE; ++i)
+    {
+        float a = data[2 * i];
+        float b = data[2 * i + 1];
+        temp[i] = (a + b) * HAAR_SCALE; // 평균 (Approx)
+        temp[i + HALF_BLOCK_SIZE] = (a - b) * HAAR_SCALE; // 차이 (Detail)
+    }
+
+    // 결과를 원본 배열에 복사
+    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    {
+        data[i] = temp[i];
+    }
+
+    // 다중 레벨 DWT를 원하면 여기서 temp[0..HALF_BLOCK_SIZE/2-1] 영역에 대해 재귀적으로 호출
+}
+
+// --- 1D Inverse Haar DWT 함수 (In-Place 방식, 1 레벨) ---
+// 입력: data (길이 BLOCK_SIZE), Approx는 앞 절반, Detail은 뒤 절반에 저장되어 있다고 가정
+// 출력: data 배열에 복원된 값으로 덮어씀
+void Haar_IDWT_1D_InPlace(float data[BLOCK_SIZE])
+{
+    float temp[BLOCK_SIZE]; // 임시 저장 공간
+
+    // IDWT 레벨 1 수행 (Haar)
+    for (uint i = 0; i < HALF_BLOCK_SIZE; ++i)
+    {
+        float avg = data[i]; // 평균 (Approx)
+        float diff = data[i + HALF_BLOCK_SIZE]; // 차이 (Detail)
+        // HAAR_SCALE로 나눴으므로 복원 시에는 곱하기 2 (또는 1/HAAR_SCALE)
+        temp[2 * i] = (avg + diff) / HAAR_SCALE; // 원본 a = avg + diff
+        temp[2 * i + 1] = (avg - diff) / HAAR_SCALE; // 원본 b = avg - diff
+    }
+
+    // 결과를 원본 배열에 복사
+    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    {
+        data[i] = temp[i];
+    }
+    // 다중 레벨 IDWT는 재귀적으로 수행
+}
+
+
+// ==============================================
+// DWT Pass 1: Rows (Y 채널 Row DWT + CbCr 저장)
+// ==============================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void DWT_Pass1_Rows(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    uint blockX = groupID.x * BLOCK_SIZE;
+    uint blockY = groupID.y * BLOCK_SIZE;
+    uint threadX = groupThreadID.x; // 열 인덱스 (블록 내)
+    uint threadY = groupThreadID.y; // 행 인덱스 (블록 내) - 이 스레드가 처리할 행 담당
+
+    // 1. 블록의 한 행(row) 로드 및 YCbCr 변환, Y는 공유 메모리에, CbCr은 바로 출력
+    // 각 스레드는 자신의 행(threadY)에 해당하는 픽셀 하나씩 로드 -> 공유 메모리 채우기
+    uint loadX = blockX + threadX;
+    uint loadY = blockY + threadY;
+    float3 pixelYCbCr = float3(0, 0, 0); // Out-of-bounds 처리용
+
+    if (loadX < Width && loadY < Height)
+    {
+        pixelYCbCr = RGBToYCbCr(Source.Load(int3(loadX, loadY, 0)).rgb);
+        // CbCr 값은 바로 ChromaBuffer에 쓰기 (해당 픽셀 위치에)
+        ChromaBuffer[uint2(loadX, loadY)] = pixelYCbCr.yz;
+    }
+    else
+    {
+         // 패딩 영역 CbCr 처리 (0으로 쓸 수도 있고, 경계 복사 등도 가능)
+        ChromaBuffer[uint2(loadX, loadY)] = float2(0, 0); // 일단 0으로 씀
+    }
+    // Y 값을 공유 메모리의 해당 위치에 저장
+    SharedBlockY[threadY][threadX] = pixelYCbCr.x;
+
+    GroupMemoryBarrierWithGroupSync(); // 모든 스레드가 로드 완료 및 CbCr 쓰기 완료까지 대기
+
+    // 2. 각 스레드는 자신이 담당하는 행(threadY)에 대해 1D DWT 수행
+    // 공유 메모리에서 자신의 행 데이터를 로컬 배열로 가져오기
+    float rowDataY[BLOCK_SIZE];
+    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    {
+        rowDataY[i] = SharedBlockY[threadY][i];
+    }
+
+    // 1D Haar DWT 수행 (결과는 rowDataY에 덮어쓰임)
+    Haar_DWT_1D_InPlace(rowDataY);
+
+    // 3. DWT 변환된 Y' 결과를 IntermediateYBuffer에 쓰기
+    // 각 스레드는 자신의 행(threadY)의 변환 결과 중 자신의 열(threadX) 위치 값 쓰기
+    uint writeX = blockX + threadX;
+    uint writeY = blockY + threadY;
+    if (writeX < Width && writeY < Height)
+    {
+        IntermediateYBuffer[uint2(writeX, writeY)] = rowDataY[threadX];
+    }
+    // CbCr은 이미 위에서 저장 완료됨
+}
+
+
+// =========================================================
+// DWT Pass 2: Columns + Bitstream Embedding (Y 채널 처리)
+// =========================================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void DWT_Pass2_Cols_Embed(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    uint blockX = groupID.x * BLOCK_SIZE;
+    uint blockY = groupID.y * BLOCK_SIZE;
+    uint threadX = groupThreadID.x; // 열 인덱스 (블록 내) - 이 스레드가 처리할 열 담당
+    uint threadY = groupThreadID.y; // 행 인덱스 (블록 내)
+
+    // 1. 블록의 한 열(column) Y' 데이터를 공유 메모리로 로드 (IntermediateYBuffer 에서)
+    // 각 스레드는 자신의 열(threadX)에 해당하는 픽셀 하나씩 로드 -> 공유 메모리 채우기
+    uint loadX = blockX + threadX;
+    uint loadY = blockY + threadY;
+    float loadedY = 0.0f;
+    if (loadX < Width && loadY < Height)
+    {
+        loadedY = IntermediateYBuffer.Load(int3(loadX, loadY, 0));
+    }
+    SharedBlockY[threadY][threadX] = loadedY;
+
+    GroupMemoryBarrierWithGroupSync(); // 모든 스레드 로드 완료까지 대기
+
+    // 2. 각 스레드는 자신이 담당하는 열(threadX)에 대해 1D DWT 수행
+    // 공유 메모리에서 자신의 열 데이터를 로컬 배열로 가져오기
+    float colDataY[BLOCK_SIZE];
+    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    {
+        colDataY[i] = SharedBlockY[i][threadX];
+    }
+
+    // 1D Haar DWT 수행 (결과는 colDataY에 덮어쓰임)
+    Haar_DWT_1D_InPlace(colDataY);
+
+    // 결과 colDataY 배열은 이제 해당 열(threadX)의 최종 2D DWT 계수를 담고 있음
+    // (위쪽 절반: Approx-Col, 아래쪽 절반: Detail-Col)
+    // 최종 2D DWT 계수 C_Y(u,v) -> colDataY[v] (u=threadX)
+
+    float finalDwtCoeffY = colDataY[threadY]; // 이 스레드가 쓸 최종 Y 계수 값
+
+    // --- Bitstream 임베딩 (HH 영역 계수 사용) ---
+    if (Embed == 1)
+    {
+        // u, v는 블록 내 로컬 좌표 (0~7)
+        uint u = threadX;
+        uint v = threadY;
+
+        // HH 서브밴드 조건: u >= HALF_BLOCK_SIZE 이고 v >= HALF_BLOCK_SIZE
+        // 여기서는 간단하게 특정 위치 (예: 첫번째 HH 계수)에만 숨겨보자.
+        // 첫번째 HH 계수 위치: u = HALF_BLOCK_SIZE, v = HALF_BLOCK_SIZE
+        if (u == HALF_BLOCK_SIZE && v == HALF_BLOCK_SIZE)
+        {
+            // 이 블록에 해당하는 비트 인덱스 계산 (선형)
+             // 주의: Width가 BLOCK_SIZE 배수가 아닐 경우 numBlocksX 계산 필요
+            uint numBlocksX = (Width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+            uint blockLinearIndex = groupID.y * numBlocksX + groupID.x;
+
+            if (blockLinearIndex < BitLength) // 유효한 비트 인덱스인지 확인
+            {
+                uint bit = Bitstream[blockLinearIndex]; // 숨길 비트 값 (0 또는 1)
+                float originalCoeffY = finalDwtCoeffY;
+
+                // 임베딩 방법 예시: 비트 값에 따라 계수를 약간 변경 (QIM과 유사하게)
+                // 간단하게는 비트가 1이면 작은 양수 값을 더하고, 0이면 작은 음수 값을 더하는 방식 등
+                // 또는 LSB 변경 방식 (단, float에서는 주의 필요)
+                // 여기서는 간단히 작은 값(embedStrength)을 더하거나 빼는 방식 사용
+                float embedStrength = 0.01f; // 임베딩 강도 (조절 필요)
+                if (bit == 1)
+                {
+                    finalDwtCoeffY += embedStrength;
+                }
+                else
+                {
+                    // finalDwtCoeffY -= embedStrength; // 0일 때도 변경하거나, 그대로 둘 수 있음
+                }
+                 // 또는 간단 LSB 설정 (부동소수점 정밀도 문제 가능성 있음)
+                 // finalDwtCoeffY = (bit == 1) ? abs(finalDwtCoeffY) : -abs(finalDwtCoeffY); // 부호 변경 등
+
+                // TODO: 더 견고한 임베딩 방식 선택 (QIM, LSB 등)
+            }
+        }
+    }
+    // --- 임베딩 끝 ---
+
+    // 3. 최종 Y DWT 계수를 DWTOutputY 텍스처에 쓰기
+    uint writeX = blockX + threadX; // u (전역 좌표)
+    uint writeY = blockY + threadY; // v (전역 좌표)
+    if (writeX < Width && writeY < Height)
+    {
+        DWTOutputY[uint2(writeX, writeY)] = finalDwtCoeffY;
+    }
+}
+
+
+// ==============================================
+// IDWT Pass 1: Columns (Y 채널 처리)
+// ==============================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void IDWT_Pass1_Cols(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    uint blockX = groupID.x * BLOCK_SIZE;
+    uint blockY = groupID.y * BLOCK_SIZE;
+    uint threadX = groupThreadID.x; // 열 인덱스 (블록 내) - 이 스레드가 처리할 열 담당
+    uint threadY = groupThreadID.y; // 행 인덱스 (블록 내)
+
+    // 1. 블록의 Y DWT 계수 한 열(column)을 공유 메모리로 로드 (DWTOutputY 에서)
+    uint loadX = blockX + threadX; // u
+    uint loadY = blockY + threadY; // v
+    float loadedCoeffY = 0.0f;
+    if (loadX < Width && loadY < Height)
+    {
+        loadedCoeffY = DWTOutputY.Load(int3(loadX, loadY, 0));
+    }
+    SharedBlockY[threadY][threadX] = loadedCoeffY; // C_Y(u,v) 로드
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 2. 각 스레드는 자신이 담당하는 열(threadX)에 대해 1D IDWT 수행
+    float colDataY[BLOCK_SIZE];
+    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    {
+        colDataY[i] = SharedBlockY[i][threadX]; // 열 C_Y(u, v=i) 가져오기
+    }
+
+    // 1D Inverse Haar DWT 수행 (결과는 colDataY에 덮어쓰임)
+    Haar_IDWT_1D_InPlace(colDataY); // 중간 Y' 값 복원
+
+    // colDataY는 이제 열 방향 IDWT가 완료된 중간 Y' 값을 가짐
+
+    // 3. 중간 Y' 결과를 IntermediateYBuffer에 쓰기
+    uint writeX = blockX + threadX; // u' (행 방향은 아직 DWT 상태)
+    uint writeY = blockY + threadY; // y (열 방향은 복원됨)
+    if (writeX < Width && writeY < Height)
+    {
+        IntermediateYBuffer[uint2(writeX, writeY)] = colDataY[threadY]; // 스레드의 행 위치(threadY)에 해당하는 복원된 값 쓰기
+    }
+}
+
+// ========================================================
+// IDWT Pass 2: Rows (Y 채널 처리 + CbCr 결합 + RGB 변환)
+// ========================================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void IDWT_Pass2_Rows(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    uint blockX = groupID.x * BLOCK_SIZE;
+    uint blockY = groupID.y * BLOCK_SIZE;
+    uint threadX = groupThreadID.x; // 최종 픽셀 x (블록 내)
+    uint threadY = groupThreadID.y; // 최종 픽셀 y (블록 내) - 이 스레드가 처리할 행 담당
+
+    // 1. 블록의 한 행(row) 중간 Y' 데이터를 공유 메모리로 로드 (IntermediateYBuffer 에서)
+    uint loadX = blockX + threadX; // u'
+    uint loadY = blockY + threadY; // y
+    float loadedYPrime = 0.0f;
+    if (loadX < Width && loadY < Height)
+    {
+        loadedYPrime = IntermediateYBuffer.Load(int3(loadX, loadY, 0));
+    }
+    SharedBlockY[threadY][threadX] = loadedYPrime;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 2. 각 스레드는 자신이 담당하는 행(threadY)에 대해 1D IDWT 수행
+    float rowDataYPrime[BLOCK_SIZE];
+    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    {
+        rowDataYPrime[i] = SharedBlockY[threadY][i]; // 행 Y'(u'=i, y) 가져오기
+    }
+
+    // 1D Inverse Haar DWT 수행 (결과는 rowDataYPrime에 덮어쓰임)
+    Haar_IDWT_1D_InPlace(rowDataYPrime); // 최종 Y 복원
+
+    float finalPixelValueY = rowDataYPrime[threadX]; // 최종 복원된 Y 값 at (x, y)
+
+    // 3. 원본 CbCr 값 로드 (ChromaBuffer 사용)
+    uint writeX = blockX + threadX; // 최종 픽셀 x (전역)
+    uint writeY = blockY + threadY; // 최종 픽셀 y (전역)
+    float2 originalCbCr = float2(0.0, 0.0);
+    if (writeX < Width && writeY < Height)
+    {
+        originalCbCr = ChromaBuffer.Load(int3(writeX, writeY, 0)); // 원본 CbCr 로드
+    }
+
+    // 4. 최종 복원된 Y 와 원본 CbCr 결합 후 RGB 변환
+    float3 finalYCbCr = float3(finalPixelValueY, originalCbCr.x, originalCbCr.y);
+    float3 finalRGB = YCbCrToRGB(finalYCbCr);
+
+    // 5. 최종 RGB 픽셀 값을 IDWTOutput 텍스처에 쓰기
+    if (writeX < Width && writeY < Height)
+    {
+        IDWTOutput[uint2(writeX, writeY)] = float4(finalRGB.rgb, 1.0f); // Alpha는 1.0
+    }
+    else
+    {
+         // 패딩 영역 처리 (검은색 등)
+         IDWTOutput[uint2(writeX, writeY)] = float4(0,0,0,1);
+    }
+}
