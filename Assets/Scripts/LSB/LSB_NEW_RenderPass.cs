@@ -97,7 +97,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError($"[DCTRenderPass] ComputeBuffer 생성 실패: {ex.Message}");
+                    Debug.LogError($"[LSBRenderPass] ComputeBuffer 생성 실패: {ex.Message}");
                     bitstreamBuffer = null;
                     return;
                 }
@@ -109,7 +109,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[DCTRenderPass] ComputeBuffer SetData 오류: {ex.Message}");
+                Debug.LogError($"[LSBRenderPass] ComputeBuffer SetData 오류: {ex.Message}");
                 bitstreamBuffer?.Release();
                 bitstreamBuffer = null;
             }

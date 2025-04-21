@@ -67,9 +67,9 @@ void Haar_DWT_1D_InPlace(float data[BLOCK_SIZE])
     }
 
     // 결과를 원본 배열에 복사
-    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    for (uint j = 0; j < BLOCK_SIZE; ++j)
     {
-        data[i] = temp[i];
+        data[j] = temp[j];
     }
 
     // 다중 레벨 DWT를 원하면 여기서 temp[0..HALF_BLOCK_SIZE/2-1] 영역에 대해 재귀적으로 호출
@@ -93,9 +93,9 @@ void Haar_IDWT_1D_InPlace(float data[BLOCK_SIZE])
     }
 
     // 결과를 원본 배열에 복사
-    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    for (uint j = 0; j < BLOCK_SIZE; ++j)
     {
-        data[i] = temp[i];
+        data[j] = temp[j];
     }
     // 다중 레벨 IDWT는 재귀적으로 수행
 }
