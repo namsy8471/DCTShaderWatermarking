@@ -19,7 +19,6 @@ public class LSBRenderFeature : ScriptableRendererFeature
     public string addressableKey = "OriginBlockData";
 
     private LSBRenderPass lsbRenderPass;
-    private byte[] cachedEncryptedData = null;
 
     public override void Create()
     {
@@ -57,8 +56,6 @@ public class LSBRenderFeature : ScriptableRendererFeature
         private ComputeBuffer bitstreamBuffer;
         private List<uint> payloadBits; // 헤더 포함, 패딩 전 원본 페이로드
         private List<uint> finalBitsToEmbed; // 최종 삽입될 비트 (패딩 완료)
-
-        private bool isReadbackPending = false;
 
         private const int THREAD_GROUP_SIZE_X = 8;
         private const int THREAD_GROUP_SIZE_Y = 8;
@@ -240,6 +237,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
             int height = cameraTarget.rt.height;
 
             cmd.CopyTexture(cameraTarget, sourceTextureHandle); // Copy source
+            RTResultHolder.DedicatedSaveTargetBeforeEmbedding = sourceTextureHandle; // 원본 복사본 저장;
 
             using (new ProfilingScope(cmd, new ProfilingSampler(profilerTag)))
             {

@@ -309,6 +309,7 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
             if (threadGroupsX <= 0 || threadGroupsY <= 0) { CommandBufferPool.Release(cmd); return; }
 
             cmd.Blit(cameraTarget, sourceTextureHandle); // 원본 복사
+            RTResultHolder.DedicatedSaveTargetBeforeEmbedding = sourceTextureHandle; // 원본 복사본 저장;
 
             using (new ProfilingScope(cmd, profilingSampler))
             {

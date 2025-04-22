@@ -742,6 +742,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   extractionKey: 293
   extractionMode: 0
+  logPixelValues: 0
   ssSecretKey: OriginBlockData
   ssCoefficientsToUse: 20
   sourceRT: {fileID: 0}
@@ -757,12 +758,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 92ecd9f2e3ef83a4c83f0f2c4d882ff2, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  inputTexture: {fileID: 2800000, guid: e64d88ff53cb8ef4fa513fb6cee2f806, type: 3}
-  methodToUse: 1
-  extractKey: 291
-  qimDelta: 0.05
-  dctU: 4
-  dctV: 4
+  extractionKey: 291
+  extractionMode: 1
+  logPixelValues: 1
+  ssSecretKey: OriginBlockData
+  ssCoefficientsToUse: 20
+  sourceTexture2d: {fileID: 2800000, guid: d9b4010c5c40c1648ab9a8617dce0447, type: 3}
 --- !u!114 &572246016
 MonoBehaviour:
   m_ObjectHideFlags: 0

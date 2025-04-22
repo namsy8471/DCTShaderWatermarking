@@ -79,7 +79,7 @@ MonoBehaviour:
   ssRgbDctComputeShader: {fileID: 7200000, guid: cbfaad5dcbaf5614595a14f8c0cfcff7,
     type: 3}
   embedBitstream: 1
-  embeddingStrength: 0.02
+  embeddingStrength: 0.03
   secretKey: OriginBlockData
   coefficientsToUse: 20
 --- !u!114 &-1898557105666974581

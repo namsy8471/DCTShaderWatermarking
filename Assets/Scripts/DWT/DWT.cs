@@ -82,7 +82,6 @@ public class DWTRenderFeature : ScriptableRendererFeature
         private ComputeBuffer bitstreamBuffer;
 
         private List<uint> finalBitsToEmbed; // 최종 삽입될 비트 (패딩 완료)
-        private bool isReadbackPending = false;
 
         // DWT는 QIM Delta, u/v Index 불필요
         // 필요시 DWT 레벨 등의 파라미터 추가 가능

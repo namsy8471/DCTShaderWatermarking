@@ -9,7 +9,7 @@
 #define BLOCK_SIZE 8
 #define BLOCK_SIZE_FLOAT 8.0f
 #define PI 3.14159265359f
-#define SQRT1_N (sqrt(1.0f / BLOCK_SIZE_FLOAT)) // sqrt(1/8)
+#define SQRT1_N (1.0f / sqrt(BLOCK_SIZE_FLOAT)) // sqrt(1/8)
 #define SQRT2_N (sqrt(2.0f / BLOCK_SIZE_FLOAT)) // sqrt(2/8) = 0.5
 
 // --- 워터마킹 파라미터 (C#에서 설정) ---

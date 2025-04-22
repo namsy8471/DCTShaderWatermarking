@@ -14,7 +14,7 @@ using UnityEngine.Experimental.Rendering; // Vector2Int (or UnityEngine.Vector2I
 public class RealtimeExtractorDebug : MonoBehaviour
 {
     // 추출 모드 선택용 Enum
-    public enum ExtractionMode { DCT_SS, LSB }
+    public enum ExtractionMode { LSB, DCT_SS, DWT, SVD }
 
     [Header("추출 설정")]
     public KeyCode extractionKey = KeyCode.F12; // 추출 시작 키
@@ -68,14 +68,12 @@ public class RealtimeExtractorDebug : MonoBehaviour
     {
         if (Input.GetKeyDown(extractionKey) && !isRequestPending)
         {
-            if (sourceRT == null)
-            { /* ... sourceRT 찾기 로직 ... */
-                if (RTResultHolder.DedicatedSaveTarget != null && RTResultHolder.DedicatedSaveTarget.rt != null)
-                {
-                    sourceRT = RTResultHolder.DedicatedSaveTarget.rt; Debug.Log($"Source RT found via DCTResultHolder: {sourceRT.name}");
-                }
-                else { Debug.LogError("Source RenderTexture를 찾을 수 없습니다!"); return; }
+            if (RTResultHolder.DedicatedSaveTarget != null && RTResultHolder.DedicatedSaveTarget.rt != null)
+            {
+                sourceRT = RTResultHolder.DedicatedSaveTarget.rt; Debug.Log($"Source RT found via DCTResultHolder: {sourceRT.name}");
             }
+            else { Debug.LogError("Source RenderTexture를 찾을 수 없습니다!"); return; }
+            
             if (sourceRT == null || !sourceRT.IsCreated() || sourceRT.width <= 0 || sourceRT.height <= 0)
             {
                 Debug.LogError($"Source RenderTexture가 유효하지 않습니다! Name: {sourceRT?.name}, Created: {sourceRT?.IsCreated()}, Size: {sourceRT?.width}x{sourceRT?.height}"); return;
@@ -265,45 +263,37 @@ public class RealtimeExtractorDebug : MonoBehaviour
                 
             }
 
+            // 1. 비교 대상이 될 전체 예상 비트스트림 생성 (헤더 포함)
+            if (expectedFullBits == null || expectedFullBits.Count == 0)
+            {
+                Debug.LogError("예상 비트스트림을 생성할 수 없습니다!");
+            }
+            else
+            {
+                // 2. 동기화 패턴 탐색 및 페이로드 검증 함수 호출
+                int syncStartIndex = FindValidatedWatermarkStartIndex(extractedBits, expectedFullBits, sync_pattern_cs);
+
+                // 3. 결과 처리 (예: 성공 시 페이로드 사용)
+                if (syncStartIndex != -1)
+                {
+                    int payloadStartIndex = syncStartIndex + SYNC_PATTERN_LENGTH;
+                    int payloadLength = extractedBits.Count - payloadStartIndex;
+                    if (payloadLength > 0)
+                    {
+                        Debug.Log($"성공적으로 동기화됨. 인덱스 {payloadStartIndex} 부터 {payloadLength} 비트의 페이로드 사용 가능.");
+                        // TODO: 여기서 payloadBits를 실제 데이터로 변환하는 등의 작업 수행
+                        // List<int> payloadBits = extractedBits.GetRange(payloadStartIndex, payloadLength);
+                    }
+                }
+                // else: 함수 내부에서 이미 실패 로그 출력됨
+            }
+
             stopwatch.Stop();
             Debug.Log($"CPU 처리 시간: {stopwatch.Elapsed.TotalMilliseconds:F2} ms ({extractedBits.Count} 비트 처리).");
-
-            // --- 결과 비교 및 출력 ---
-            CompareAgainstFullExpected(extractedBits, expectedFullBits);
 
         }
         catch (Exception e) { Debug.LogError($"추출/처리 중 오류 발생: {e.Message}\n{e.StackTrace}"); }
         finally { isRequestPending = false; }
-    }
-
-    // 동기화 패턴 비교 및 로깅 함수
-    private void CompareAndLogSyncPattern(List<int> bits)
-    { /* ... 이전과 동일 ... */
-        if (bits == null || bits.Count == 0) { Debug.LogError("추출된 비트가 없습니다!"); return; }
-        int compareLength = Math.Min(bits.Count, 1532);
-        if (compareLength == 0) { Debug.LogError("비교할 비트가 없습니다!"); return; }
-
-        StringBuilder extractedSb = new StringBuilder(compareLength);
-        bool match = true; int mismatchCount = 0; StringBuilder diffMarker = new StringBuilder(compareLength);
-        for (int i = 0; i < compareLength; ++i)
-        {
-            extractedSb.Append(bits[i]);
-            if (i < sync_pattern_cs.Length && bits[i] != sync_pattern_cs[i]) { match = false; mismatchCount++; diffMarker.Append("^"); }
-            else { diffMarker.Append(" "); }
-        }
-        string extractedPattern = extractedSb.ToString();
-        string expectedSubPattern = "111100001111000010101010101010100011001100110011110011000111011000000110000000000110000100011110000101011011000110111001111000010101101011010010110111001100111111011101010101111001010111100100110000101010101011001110111111011100000101000011011001011110000111100110000001100111111010011110010100111001111001111001100001011101101110111001100000000000101011100101111101110011001110011000000010000010100101001110111110001100010111001000001110001110101001000101011011010100111110000111100110110001000101111011101110011010111111010011011011000000110100110111011100111011011111010100010001011110010111100111011101001000011111010100011010110100011101001101010110011110010110100000000001101111010011000110000101111011010110001111110101110111010011010101111010101101111110100110111001110001100101101010101100100011011100101011001010010001010001101111111110100010011111110011001100100001000101111110111100001001010100011011100001111000101100001001001101100001110100011101001101100011000010001100110011101000011100111100101101111001100101011011101011100110001110100100010011010111011101100010111011010011001110000111111111011111010000001110110101000101000101101000001000100110111100111001001000001001100000001100000101101000000001010111110100101010011000111011100001100110110100100010100010001011101010110001010100001011001100001000001110100001001010111011001110000100101011110001011110000010100110100101000010001010000001101010111011001011000111011100101101100001000111100000110100000001100010010001001010111101001101101000110100100010001011011011";
-
-
-        Debug.Log($"추출된 패턴 ({compareLength} 비트): {extractedPattern}");
-        Debug.Log($"예상 패턴 ({compareLength} 비트): {expectedSubPattern}");
-        if (match && compareLength == SYNC_PATTERN_LENGTH) { Debug.Log($"<color=green>동기화 패턴 {compareLength} 비트 일치!</color>"); }
-        else
-        {
-            Debug.LogError($"<color=red>동기화 패턴 불일치! ({mismatchCount} / {compareLength} 비트 다름)</color>");
-            int markerLength = Math.Min(diffMarker.Length, 1532);
-            Debug.Log($"불일치 위치: {diffMarker.ToString().Substring(0, markerLength)}{(diffMarker.Length > markerLength ? "..." : "")}");
-        }
     }
 
     private void CompareAgainstFullExpected(List<int> extracted, List<uint> expected)
@@ -351,6 +341,273 @@ public class RealtimeExtractorDebug : MonoBehaviour
             Debug.Log($"불일치 위치: {diffMarker.ToString().Substring(0, markerLength)}{(diffMarker.Length > markerLength ? "..." : "")}");
         }
     }
+
+
+    // --- ★★★ 수정: 동기화 패턴 탐색 및 결과 처리 함수 ★★★ ---
+    private void SearchAndComparePattern(List<int> extractedBits)
+    {
+        if (extractedBits == null || extractedBits.Count < SYNC_PATTERN_LENGTH)
+        {
+            Debug.LogError($"동기화 패턴({SYNC_PATTERN_LENGTH}비트)을 찾기에 추출된 비트({extractedBits?.Count ?? 0}비트)가 부족합니다!");
+            return;
+        }
+
+        int foundIndex = -1; // 동기화 패턴 시작 인덱스 (-1: 못찾음)
+        // 탐색 범위: 추출된 비트열 내에서 동기화 패턴이 들어갈 수 있는 마지막 위치까지
+        int maxSearchStart = extractedBits.Count - SYNC_PATTERN_LENGTH;
+
+        Debug.Log($"동기화 패턴 탐색 시작 (최대 {maxSearchStart + 1} 위치 확인)...");
+        System.Diagnostics.Stopwatch searchStopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        // 순차적으로 비교하며 동기화 패턴 탐색
+        for (int i = 0; i <= maxSearchStart; ++i)
+        {
+            bool currentMatch = true;
+            for (int j = 0; j < SYNC_PATTERN_LENGTH; ++j)
+            {
+                // sync_pattern_cs (int 배열) 와 extractedBits (List<int>) 비교
+                if (i + j >= extractedBits.Count || j >= sync_pattern_cs.Length || // 범위 체크
+                    extractedBits[i + j] != sync_pattern_cs[j])
+                {
+                    currentMatch = false;
+                    break; // 하나라도 틀리면 다음 시작 위치(i+1)로 이동
+                }
+            }
+
+            if (currentMatch) // 패턴을 찾았으면
+            {
+                foundIndex = i; // 시작 인덱스 기록
+                Debug.Log($"동기화 패턴 탐색 성공! 시작 인덱스: {foundIndex}");
+                break; // 첫 번째 일치하는 패턴을 찾으면 탐색 종료
+            }
+        }
+        searchStopwatch.Stop();
+        Debug.Log($"동기화 패턴 탐색 완료 ({searchStopwatch.Elapsed.TotalMilliseconds:F2} ms 소요).");
+
+        // --- 결과 처리 ---
+        if (foundIndex != -1) // 동기화 패턴을 찾았을 경우
+        {
+            Debug.Log($"<color=lime>동기화 패턴 발견! (시작 인덱스: {foundIndex})</color>");
+
+            // 실제 페이로드 데이터 추출 (동기화 패턴 바로 다음부터)
+            int payloadStartIndex = foundIndex + SYNC_PATTERN_LENGTH;
+            int extractedPayloadLength = extractedBits.Count - payloadStartIndex;
+
+            if (extractedPayloadLength > 0)
+            {
+                // 예상 페이로드 생성 (동기화 패턴 제외)
+                List<uint> expectedPayload = new List<uint>();
+                List<uint> fullExpected = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
+                if (fullExpected != null && fullExpected.Count > SYNC_PATTERN_LENGTH)
+                {
+                    expectedPayload.AddRange(fullExpected.Skip(SYNC_PATTERN_LENGTH));
+                }
+
+                // 추출된 페이로드와 예상 페이로드 비교
+                int comparePayloadLength = Math.Min(extractedPayloadLength, expectedPayload.Count);
+                StringBuilder extractedPayloadSb = new StringBuilder();
+                StringBuilder expectedPayloadSb = new StringBuilder();
+                StringBuilder diffPayloadMarker = new StringBuilder();
+                int payloadMismatchCount = 0;
+                bool payloadMatch = true;
+
+                for (int i = 0; i < comparePayloadLength; ++i)
+                {
+                    int extractedBit = extractedBits[payloadStartIndex + i];
+                    uint expectedBit = (i < expectedPayload.Count) ? expectedPayload[i] : 9; // 예상 범위 벗어나면 9로 표시
+
+                    extractedPayloadSb.Append(extractedBit);
+                    expectedPayloadSb.Append(expectedBit);
+
+                    if (extractedBit != expectedBit)
+                    {
+                        payloadMatch = false;
+                        payloadMismatchCount++;
+                        diffPayloadMarker.Append("^");
+                    }
+                    else
+                    {
+                        diffPayloadMarker.Append(" ");
+                    }
+                }
+
+                int displayLength = Math.Min(comparePayloadLength, 120);
+                Debug.Log($"추출 페이로드 ({comparePayloadLength}비트): {extractedPayloadSb.ToString().Substring(0, displayLength)}{(comparePayloadLength > displayLength ? "..." : "")}");
+                Debug.Log($"예상 페이로드 ({comparePayloadLength}비트): {expectedPayloadSb.ToString().Substring(0, displayLength)}{(comparePayloadLength > displayLength ? "..." : "")}");
+
+                if (payloadMatch)
+                {
+                    Debug.Log($"<color=green>페이로드 {comparePayloadLength} 비트 일치!</color>");
+                }
+                else
+                {
+                    Debug.LogError($"<color=red>페이로드 불일치! ({payloadMismatchCount} / {comparePayloadLength} 비트 다름)</color>");
+                    int markerLength = Math.Min(diffPayloadMarker.Length, 120);
+                    Debug.Log($"불일치 위치: {diffPayloadMarker.ToString().Substring(0, markerLength)}{(diffPayloadMarker.Length > markerLength ? "..." : "")}");
+                }
+
+                // TODO: 추출된 페이로드(payload)를 실제 데이터로 변환하거나 사용하는 로직 추가
+            }
+            else
+            {
+                Debug.LogWarning("동기화 패턴 이후에 추출된 페이로드 데이터가 없습니다.");
+            }
+        }
+        else // 동기화 패턴 못찾음
+        {
+            Debug.LogError("<color=orange>동기화 패턴을 찾지 못했습니다!</color> 추출된 비트 오류율이 높거나 데이터 시작점이 다를 수 있습니다.");
+            // 실패 시 첫 부분 비교 결과라도 보여주기
+            CompareFirstBits(extractedBits);
+        }
+    }
+
+    // 비교 함수 (동기화 실패 시 첫 부분 비교용 - 이전 CompareAndLogSyncPattern과 유사)
+    private void CompareFirstBits(List<int> extracted)
+    { /* ... 이전 답변과 동일 (expectedSyncPatternString 사용) ... */
+        int compareLength = Math.Min(extracted.Count, SYNC_PATTERN_LENGTH);
+        if (compareLength == 0) return;
+        Debug.LogWarning($"동기화 실패. 첫 {compareLength} 비트만 예상 패턴과 비교합니다.");
+
+        StringBuilder extractedSb = new StringBuilder(compareLength);
+        StringBuilder expectedSb = new StringBuilder(compareLength);
+        StringBuilder diffMarker = new StringBuilder(compareLength);
+        int mismatchCount = 0;
+        for (int i = 0; i < compareLength; ++i)
+        {
+            extractedSb.Append(extracted[i]);
+            expectedSb.Append(expectedSyncPatternString[i]); // 미리 생성된 문자열 사용
+            if (extracted[i] != sync_pattern_cs[i]) { mismatchCount++; diffMarker.Append("^"); }
+            else { diffMarker.Append(" "); }
+        }
+        int displayLength = Math.Min(compareLength, 2000);
+        Debug.Log($"추출된 비트 (처음 {displayLength}개): {extractedSb.ToString().Substring(0, displayLength)}{(compareLength > displayLength ? "..." : "")}");
+        Debug.Log($"예상 패턴 (처음 {displayLength}개): {expectedSb.ToString().Substring(0, displayLength)}{(compareLength > displayLength ? "..." : "")}");
+        Debug.LogError($"<color=red>첫 {compareLength} 비트 비교 결과: {mismatchCount} 비트 불일치.</color>");
+        int markerLength = Math.Min(diffMarker.Length, 2000);
+        Debug.Log($"불일치 위치: {diffMarker.ToString().Substring(0, markerLength)}{(diffMarker.Length > markerLength ? "..." : "")}");
+    }
+
+    /// <summary>
+    /// 추출된 비트열 내에서 동기화 패턴을 탐색하고, 찾으면 페이로드 부분까지 비교하여
+    /// 동기화 패턴과 페이로드가 모두 일치하는 첫 번째 시작 인덱스를 반환합니다.
+    /// </summary>
+    /// <param name="extractedBits">GPU에서 추출된 전체 비트 리스트</param>
+    /// <param name="expectedFullPayloadWithHeader">예상되는 전체 비트 리스트 (동기화 패턴 포함)</param>
+    /// <param name="syncPattern">동기화 패턴 int 배열</param>
+    /// <returns>검증된 동기화 패턴의 시작 인덱스 (0부터 시작). 유효한 패턴을 찾지 못하면 -1 반환.</returns>
+    private int FindValidatedWatermarkStartIndex(List<int> extractedBits, List<uint> expectedFullPayloadWithHeader, int[] syncPattern)
+    {
+        int syncPatternLength = syncPattern.Length;
+
+        // --- 입력 유효성 검사 ---
+        if (extractedBits == null || expectedFullPayloadWithHeader == null || syncPattern == null || syncPatternLength == 0)
+        {
+            Debug.LogError("[FindValidatedWatermarkStartIndex] 입력 데이터가 유효하지 않습니다.");
+            return -1; // 오류 코드 -1
+        }
+        // 최소한 동기화 패턴 길이만큼의 비트는 추출되어야 함
+        if (extractedBits.Count < syncPatternLength)
+        {
+            Debug.LogWarning($"추출된 비트 수({extractedBits.Count})가 동기화 패턴 길이({syncPatternLength})보다 짧아 탐색이 불가능합니다.");
+            return -1;
+        }
+        // 예상 페이로드에도 최소한 동기화 패턴은 있어야 함
+        if (expectedFullPayloadWithHeader.Count < syncPatternLength)
+        {
+            Debug.LogWarning($"예상 페이로드 길이({expectedFullPayloadWithHeader.Count})가 동기화 패턴 길이({syncPatternLength})보다 짧습니다.");
+            // 이 경우 동기화 패턴만 비교할 수도 있으나, 현재 로직은 페이로드 검증까지 하므로 실패 처리
+            return -1;
+        }
+
+        // --- 동기화 패턴 탐색 루프 ---
+        // extractedBits 리스트에서 syncPattern이 시작될 수 있는 마지막 위치까지만 탐색
+        int maxSearchStart = extractedBits.Count - syncPatternLength;
+        Debug.Log($"동기화 패턴 탐색 시작 (추출된 비트 수: {extractedBits.Count}, 최대 {maxSearchStart + 1} 위치 확인)...");
+        System.Diagnostics.Stopwatch searchStopwatch = System.Diagnostics.Stopwatch.StartNew(); // 탐색 시간 측정
+
+        for (int i = 0; i <= maxSearchStart; ++i) // i는 현재 탐색 중인 동기화 패턴의 시작 인덱스
+        {
+            // 1. 현재 위치(i)에서 시작하는 부분이 동기화 패턴과 일치하는지 확인
+            bool isSyncMatch = true;
+            for (int j = 0; j < syncPatternLength; ++j)
+            {
+                if (extractedBits[i + j] != syncPattern[j])
+                {
+                    isSyncMatch = false; // 하나라도 다르면 불일치
+                    break; // 내부 루프 탈출
+                }
+            }
+
+            // 2. 동기화 패턴이 일치했다면, 뒤따르는 페이로드도 검증
+            if (isSyncMatch)
+            {
+                Debug.Log($"인덱스 {i}에서 동기화 패턴 후보 발견! 페이로드 검증 시작...");
+
+                int payloadStartIndexInExtracted = i + syncPatternLength; // 추출된 비트에서 페이로드 시작 위치
+                int payloadStartIndexInExpected = syncPatternLength;    // 예상 비트열에서 페이로드 시작 위치
+                int availableExtractedPayload = extractedBits.Count - payloadStartIndexInExtracted; // 추출된 비트 중 남은 페이로드 길이
+                int expectedPayloadLength = expectedFullPayloadWithHeader.Count - payloadStartIndexInExpected; // 예상 페이로드 길이
+                int comparePayloadLength = Math.Min(availableExtractedPayload, expectedPayloadLength); // 비교할 실제 페이로드 길이
+
+                // 비교할 페이로드가 있는지 확인
+                if (comparePayloadLength <= 0)
+                {
+                    Debug.LogWarning($"인덱스 {i}에서 동기화 패턴은 일치했으나 비교할 페이로드가 없습니다. (추출된 페이로드 길이: {availableExtractedPayload}, 예상 페이로드 길이: {expectedPayloadLength})");
+                    // 동기화 패턴만 맞으면 성공으로 간주할지, 아니면 실패로 간주하고 계속 탐색할지 정책 결정 필요
+                    // 여기서는 페이로드 검증 실패로 보고 계속 탐색 (continue)
+                    continue; // 다음 i 로 넘어감
+                }
+
+                // 페이로드 비교 시작
+                bool isPayloadMatch = true;
+                int payloadMismatchCount = 0;
+                StringBuilder diffMarker = new StringBuilder(comparePayloadLength); // 오류 위치 표시용
+
+                for (int j = 0; j < comparePayloadLength; ++j)
+                {
+                    int extractedBit = extractedBits[payloadStartIndexInExtracted + j];
+                    // expectedFullPayloadWithHeader는 uint 리스트이므로 int로 캐스팅 필요
+                    uint expectedBitUint = expectedFullPayloadWithHeader[payloadStartIndexInExpected + j];
+                    int expectedBit = (int)expectedBitUint;
+
+                    if (extractedBit != expectedBit)
+                    {
+                        isPayloadMatch = false;
+                        payloadMismatchCount++;
+                        diffMarker.Append("^");
+                        // 많은 오류가 예상되면 여기서 break 하여 성능 향상 가능
+                        // if (payloadMismatchCount > 10) break; // 예: 10개 이상 틀리면 더 비교 안 함
+                    }
+                    else
+                    {
+                        diffMarker.Append(" ");
+                    }
+                }
+
+                // 페이로드 검증 결과 확인
+                if (isPayloadMatch) // 페이로드까지 모두 일치!
+                {
+                    searchStopwatch.Stop(); // 탐색 시간 측정 종료
+                    Debug.Log($"<color=lime>인덱스 {i}에서 동기화 패턴 및 페이로드 ({comparePayloadLength}비트) 완전 일치 확인! 최종 성공.</color> (탐색 시간: {searchStopwatch.Elapsed.TotalMilliseconds:F2} ms)");
+                    return i; // 성공! 동기화 패턴이 시작된 인덱스(i) 반환
+                }
+                else // 동기화 패턴은 맞았으나 페이로드가 틀림 (False Positive)
+                {
+                    Debug.LogWarning($"인덱스 {i}에서 동기화 패턴은 일치했으나 페이로드가 불일치합니다 ({payloadMismatchCount}/{comparePayloadLength} 비트 다름). 계속 탐색...");
+                    int displayLength = Math.Min(comparePayloadLength, 120);
+                    Debug.Log($"페이로드 불일치 위치: {diffMarker.ToString().Substring(0, displayLength)}{(comparePayloadLength > displayLength ? "..." : "")}");
+                    // isSyncMatch는 여전히 true 상태이므로, 외부 루프는 다음 i로 진행됨
+                }
+            }
+            // else: isSyncMatch가 false이면 다음 i로 넘어감
+        } // end for i (탐색 루프)
+
+        // 루프를 다 돌았는데도 검증된 패턴을 찾지 못함
+        searchStopwatch.Stop();
+        Debug.LogError($"<color=orange>추출된 비트열 전체에서 유효한 동기화 패턴 + 페이로드를 찾지 못했습니다.</color> (탐색 시간: {searchStopwatch.Elapsed.TotalMilliseconds:F2} ms)");
+        return -1; // 최종 실패
+    }
+
 
     // =============================================================
     // --- CPU 기반 2D DCT 함수 ---
@@ -425,6 +682,9 @@ public class RealtimeExtractorDebug : MonoBehaviour
             for (int i = 0; i < BLOCK_SIZE; ++i) { dctCoeffs[i, j] = tempColOutput[i]; }
         }
     }
+
+
+
 
     // 클래스 종료
 }
