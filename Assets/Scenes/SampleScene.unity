@@ -741,10 +741,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   extractionKey: 293
-  extractionMode: 1
-  uIndex: 4
-  vIndex: 4
-  qimDelta: 0.05
+  extractionMode: 0
+  ssSecretKey: OriginBlockData
+  ssCoefficientsToUse: 20
   sourceRT: {fileID: 0}
 --- !u!114 &572246015
 MonoBehaviour:
