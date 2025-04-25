@@ -163,7 +163,7 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
         private void ReleaseBitstreamBuffer() { bitstreamBuffer?.Release(); bitstreamBuffer = null; }
 
         private void UpdatePatternBuffer(int numBlocks)
-        { /* ... 이전 SS 버전과 동일 ... */
+        {
             if (numBlocks <= 0 || currentCoefficientsToUse <= 0) { ReleasePatternBuffer(); return; }
             int requiredSize = numBlocks * currentCoefficientsToUse;
             bool needsUpdate = patternBuffer == null || !patternBuffer.IsValid() ||
@@ -201,7 +201,9 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
             if (width <= 0 || height <= 0) return;
 
             // RT Handles 할당 (RGB 처리용 - ARGBFloat 사용)
-            var bufferDesc = desc; bufferDesc.colorFormat = RenderTextureFormat.ARGBFloat; bufferDesc.enableRandomWrite = true;
+            var bufferDesc = desc;
+            bufferDesc.colorFormat = RenderTextureFormat.ARGBFloat;
+            bufferDesc.enableRandomWrite = true;
 
             RenderingUtils.ReAllocateIfNeeded(ref sourceTextureHandle, desc, FilterMode.Point, name: "_RGB_SourceCopy");
             RenderingUtils.ReAllocateIfNeeded(ref intermediateBufferRGBHandle, bufferDesc, FilterMode.Point, name: "_RGB_Intermediate");
@@ -215,39 +217,39 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
             int totalBlocks = numBlocksX * numBlocksY;
             if (totalBlocks <= 0) return;
 
-            // 비트스트림 준비
-            finalBitsToEmbed = finalBitsToEmbed ?? new List<uint>(); finalBitsToEmbed.Clear();
-            if (DataManager.IsDataReady && DataManager.EncryptedOriginData != null)
+            if (finalBitsToEmbed.Count != totalBlocks)
             {
-                try
+                // 비트스트림 준비
+                finalBitsToEmbed = finalBitsToEmbed ?? new List<uint>(); finalBitsToEmbed.Clear();
+                if (DataManager.IsDataReady && DataManager.EncryptedOriginData != null)
                 {
-                    List<uint> currentPayload = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
-                    if (currentPayload != null && currentPayload.Count > 0)
+                    try
                     {
-                        //int bitsToTake = Mathf.Min(currentPayload.Count, totalBlocks);
-                        //finalBitsToEmbed.AddRange(currentPayload.Take(bitsToTake));
-
-                        int requiredBits = totalBlocks; // 전체 8x8 블록 수 (Width * Height / 64)
-
-                        // Payload 반복해서 필요한 만큼 채우기
-                        int loops = Mathf.CeilToInt((float)requiredBits / currentPayload.Count);
-                        for (int i = 0; i < loops; ++i)
+                        List<uint> currentPayload = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
+                        if (currentPayload != null && currentPayload.Count > 0)
                         {
-                            finalBitsToEmbed.AddRange(currentPayload);
-                            if (finalBitsToEmbed.Count >= requiredBits) break;
+                            int requiredBits = totalBlocks; // 전체 8x8 블록 수 (Width * Height / 64)
+
+                            // Payload 반복해서 필요한 만큼 채우기
+                            int loops = Mathf.CeilToInt((float)requiredBits / currentPayload.Count);
+                            for (int i = 0; i < loops; ++i)
+                            {
+                                finalBitsToEmbed.AddRange(currentPayload);
+                                if (finalBitsToEmbed.Count >= requiredBits) break;
+                            }
+
+                            // 정확히 맞춰 자르기
+                            if (finalBitsToEmbed.Count > requiredBits)
+                                finalBitsToEmbed = finalBitsToEmbed.Take(requiredBits).ToList();
                         }
-
-                        // 정확히 맞춰 자르기
-                        if (finalBitsToEmbed.Count > requiredBits)
-                            finalBitsToEmbed = finalBitsToEmbed.Take(requiredBits).ToList();
                     }
+                    catch (Exception ex) { Debug.LogError($"[{profilerTag}] RGB Payload Prep Error: {ex.Message}"); finalBitsToEmbed.Clear(); }
                 }
-                catch (Exception ex) { Debug.LogError($"[{profilerTag}] RGB Payload Prep Error: {ex.Message}"); finalBitsToEmbed.Clear(); }
-            }
 
-            // 버퍼 업데이트
-            UpdateBitstreamBuffer(finalBitsToEmbed);
-            UpdatePatternBuffer(totalBlocks);
+                // 버퍼 업데이트
+                UpdateBitstreamBuffer(finalBitsToEmbed);
+                UpdatePatternBuffer(totalBlocks);
+            }
 
             // 셰이더 파라미터 설정
             int currentBitLength = finalBitsToEmbed.Count;
@@ -314,13 +316,13 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
             using (new ProfilingScope(cmd, profilingSampler))
             {
                 cmd.DispatchCompute(computeShader, kernelPass1, threadGroupsX, threadGroupsY, 1);
-                if (Input.GetKey(KeyCode.Keypad1)) cmd.Blit(intermediateBufferRGBHandle, cameraTarget); // Debug Pass 1 RGB'
+                // if (Input.GetKey(KeyCode.Keypad1)) cmd.Blit(intermediateBufferRGBHandle, cameraTarget); // Debug Pass 1 RGB'
 
                 cmd.DispatchCompute(computeShader, kernelPass2, threadGroupsX, threadGroupsY, 1);
-                if (Input.GetKey(KeyCode.Keypad2)) cmd.Blit(dctOutputRGBHandle, cameraTarget); // Debug Pass 2 RGB DCT Coeffs
+                // if (Input.GetKey(KeyCode.Keypad2)) cmd.Blit(dctOutputRGBHandle, cameraTarget); // Debug Pass 2 RGB DCT Coeffs
 
                 cmd.DispatchCompute(computeShader, kernelPass3, threadGroupsX, threadGroupsY, 1);
-                if (Input.GetKey(KeyCode.Keypad3)) cmd.Blit(intermediateBufferRGBHandle, cameraTarget); // Debug Pass 3 RGB'
+                // if (Input.GetKey(KeyCode.Keypad3)) cmd.Blit(intermediateBufferRGBHandle, cameraTarget); // Debug Pass 3 RGB'
 
                 cmd.DispatchCompute(computeShader, kernelPass4, threadGroupsX, threadGroupsY, 1);
 
@@ -344,7 +346,6 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
             RTHandles.Release(intermediateBufferRGBHandle); intermediateBufferRGBHandle = null;
             RTHandles.Release(dctOutputRGBHandle); dctOutputRGBHandle = null;
             RTHandles.Release(finalOutputHandle); finalOutputHandle = null;
-            // ChromaBuffer, QuantizedDCT Handle은 사용 안 함
             Debug.Log($"[{profilerTag}] Cleaned up RGB SS Render Pass resources.");
         }
     }

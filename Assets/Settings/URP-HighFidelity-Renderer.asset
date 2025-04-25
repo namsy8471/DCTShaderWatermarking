@@ -16,6 +16,24 @@ MonoBehaviour:
   lsbComputeShader: {fileID: 7200000, guid: 2691d7ee8c623fc439873daa7cff5aac, type: 3}
   embedBitstream: 1
   addressableKey: OriginBlockData
+--- !u!114 &-6703497610123772460
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bf337ed5485dba5478bea3acf84e577a, type: 3}
+  m_Name: DWTRenderFeatureSS
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  dwtComputeShader: {fileID: 7200000, guid: 2ff55af08f5b56840879091c9ce9614d, type: 3}
+  embedBitstream: 1
+  embeddingStrength: 0.03
+  coefficientsToUse: 10
+  addressableKey: OriginBlockData
 --- !u!114 &-6575308690640035461
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -75,7 +93,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c795dda60fd94d049a84aa71d8ca608c, type: 3}
   m_Name: DCTRenderFeatureOptimized
   m_EditorClassIdentifier: 
-  m_Active: 1
+  m_Active: 0
   ssRgbDctComputeShader: {fileID: 7200000, guid: cbfaad5dcbaf5614595a14f8c0cfcff7,
     type: 3}
   embedBitstream: 1
@@ -135,10 +153,10 @@ MonoBehaviour:
   - {fileID: 6690638146467207930}
   - {fileID: -9011381159908791362}
   - {fileID: -2744157322982174075}
-  - {fileID: 5314289574967262510}
+  - {fileID: -6703497610123772460}
   - {fileID: -1898557105666974581}
-  m_RendererFeatureMap: fa1adb18f2ebd95cbe2bfd539424f1828552dc3374cbead92e3d7c4d3626c0498b1ced125ff8a6e5
-  m_UseNativeRenderPass: 1
+  m_RendererFeatureMap: fa1adb18f2ebd95cbe2bfd539424f1828552dc3374cbead9d47de4b37064f8a28b1ced125ff8a6e5
+  m_UseNativeRenderPass: 0
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
   xrSystemData: {fileID: 11400000, guid: 60e1133243b97e347b653163a8c01b64, type: 2}
   shaders:
@@ -181,27 +199,11 @@ MonoBehaviour:
     failOperation: 0
     zFailOperation: 0
   m_ShadowTransparentReceive: 1
-  m_RenderingMode: 1
+  m_RenderingMode: 0
   m_DepthPrimingMode: 0
   m_CopyDepthMode: 0
   m_AccurateGbufferNormals: 0
   m_IntermediateTextureMode: 1
---- !u!114 &5314289574967262510
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 0}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: c0c4f9821605096438e921c88e059b5f, type: 3}
-  m_Name: DWTRenderFeature
-  m_EditorClassIdentifier: 
-  m_Active: 0
-  dwtComputeShader: {fileID: 7200000, guid: 4e0c9574917727a44a4a9448018df1df, type: 3}
-  embedBitstream: 1
-  addressableKey: OriginBlockData
 --- !u!114 &6690638146467207930
 MonoBehaviour:
   m_ObjectHideFlags: 0

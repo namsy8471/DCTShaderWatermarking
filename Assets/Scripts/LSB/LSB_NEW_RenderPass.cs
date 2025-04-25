@@ -33,13 +33,10 @@ public class LSBRenderFeature : ScriptableRendererFeature
         var camera = renderingData.cameraData.camera;
         if (camera.cameraType != CameraType.Game) { return; } // 게임 카메라가 아닐 경우 패스
 
-        if (lsbComputeShader != null && lsbRenderPass != null)
+        if (lsbComputeShader != null && lsbRenderPass != null && DataManager.IsDataReady)
         {
             lsbRenderPass.SetEmbedActive(embedBitstream);
-            if (DataManager.IsDataReady)
-            {
-                renderer.EnqueuePass(lsbRenderPass);
-            }
+            renderer.EnqueuePass(lsbRenderPass);
         }
     }
 
@@ -73,8 +70,8 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
         public void SetEmbedActive(bool isActive) { embedActive = isActive; }
 
-        private void UpdateBitstreamBuffer(List<uint> data)
-        { /* ... LSBRenderPass와 동일 ... */
+        private void UpdateBitstreamBuffer(List<uint> data, int width, int height)
+        { 
             int count = (data != null) ? data.Count : 0;
             if (count == 0)
             {
@@ -98,6 +95,12 @@ public class LSBRenderFeature : ScriptableRendererFeature
                     bitstreamBuffer = null;
                     return;
                 }
+            }
+
+            if(count == height * width)
+            {
+                Debug.LogWarning($"[LSBRenderPass] 비트스트림 크기 일치: {count} == {height * width}");
+                return;
             }
 
             try
@@ -126,74 +129,79 @@ public class LSBRenderFeature : ScriptableRendererFeature
             RenderingUtils.ReAllocateIfNeeded(ref outputTextureHandle, outputDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "_LSBOutput");
 
             // 최종 삽입될 비트 리스트 초기화
-            finalBitsToEmbed = finalBitsToEmbed ?? new List<uint>(); // Null이면 새로 생성
-            finalBitsToEmbed.Clear();
 
-            // embedActive 플래그가 활성화 되어 있고, DataManager를 통해 데이터 로딩이 완료되었는지 확인
-            // <<< 변경/추가된 부분 시작 >>>
-            if (embedActive && DataManager.IsDataReady && DataManager.EncryptedOriginData != null)
+            int width = desc.width;
+            int height = desc.height;
+            int availableCapacity = width * height;
+
+            if (finalBitsToEmbed.Count != availableCapacity)
             {
-                // 데이터가 준비되었으므로 페이로드 구성 및 패딩 시도
-                try
+                finalBitsToEmbed = finalBitsToEmbed ?? new List<uint>(); // Null이면 새로 생성
+                finalBitsToEmbed.Clear();
+
+                // embedActive 플래그가 활성화 되어 있고, DataManager를 통해 데이터 로딩이 완료되었는지 확인
+                if (embedActive && DataManager.IsDataReady && DataManager.EncryptedOriginData != null)
                 {
-                    // 1. DataManager에서 직접 원본 페이로드 구성
-                    List<uint> currentPayload = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
-
-                    // 2. 구성 결과 확인
-                    if (currentPayload == null || currentPayload.Count == 0)
+                    // 데이터가 준비되었으므로 페이로드 구성 및 패딩 시도
+                    try
                     {
-                        Debug.LogWarning("[DCTRenderPass] 원본 페이로드 구성 실패 또는 데이터 없음.");
-                        // finalBitsToEmbed는 이미 Clear()된 상태이므로 더 할 것 없음
-                    }
-                    else
-                    {
-                        // 3. 패딩 로직 수행 (currentPayload를 원본으로 사용)
-                        int width = desc.width;
-                        int height = desc.height;
-                        int availableCapacity = width * height;
-                        int totalPayloadLength = currentPayload.Count; // <- currentPayload 사용
+                        // 1. DataManager에서 직접 원본 페이로드 구성
+                        List<uint> currentPayload = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
 
-                        if (availableCapacity == 0)
+                        // 2. 구성 결과 확인
+                        if (currentPayload == null || currentPayload.Count == 0)
                         {
-                            Debug.LogWarning("[DCTRenderPass] 이미지 크기가 작아 블록 생성 불가.");
+                            Debug.LogWarning("[DCTRenderPass] 원본 페이로드 구성 실패 또는 데이터 없음.");
+                            // finalBitsToEmbed는 이미 Clear()된 상태이므로 더 할 것 없음
                         }
                         else
                         {
-                            finalBitsToEmbed.Clear(); // 패딩 전에 확실히 비우기
-                            finalBitsToEmbed.Capacity = availableCapacity;
-                            int currentPosition = 0;
-                            while (currentPosition < availableCapacity)
+                            // 3. 패딩 로직 수행 (currentPayload를 원본으로 사용)
+
+                            int totalPayloadLength = currentPayload.Count; // <- currentPayload 사용
+
+                            if (availableCapacity == 0)
                             {
-                                int remainingSpace = availableCapacity - currentPosition;
-                                int countToAdd = Math.Min(totalPayloadLength, remainingSpace);
-                                if (countToAdd <= 0) break; // totalPayloadLength가 0인 경우 포함
-                                finalBitsToEmbed.AddRange(currentPayload.GetRange(0, countToAdd)); // <- currentPayload 사용
-                                currentPosition += countToAdd;
+                                Debug.LogWarning("[DCTRenderPass] 이미지 크기가 작아 블록 생성 불가.");
                             }
-                            // Debug.Log($"[DCTRenderPass] 패딩 완료. 최종 크기: {finalBitsToEmbed.Count}");
+                            else
+                            {
+                                finalBitsToEmbed.Clear(); // 패딩 전에 확실히 비우기
+                                finalBitsToEmbed.Capacity = availableCapacity;
+                                int currentPosition = 0;
+                                while (currentPosition < availableCapacity)
+                                {
+                                    int remainingSpace = availableCapacity - currentPosition;
+                                    int countToAdd = Math.Min(totalPayloadLength, remainingSpace);
+                                    if (countToAdd <= 0) break; // totalPayloadLength가 0인 경우 포함
+                                    finalBitsToEmbed.AddRange(currentPayload.GetRange(0, countToAdd)); // <- currentPayload 사용
+                                    currentPosition += countToAdd;
+                                }
+                                // Debug.Log($"[DCTRenderPass] 패딩 완료. 최종 크기: {finalBitsToEmbed.Count}");
+                            }
                         }
                     }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"[{profilerTag}] 페이로드 구성 또는 패딩 중 오류: {ex.Message}");
+                        finalBitsToEmbed.Clear(); // 오류 시 비움
+                    }
                 }
-                catch (Exception ex)
+                // <<< 변경/추가된 부분 끝 >>>
+                else
                 {
-                    Debug.LogError($"[{profilerTag}] 페이로드 구성 또는 패딩 중 오류: {ex.Message}");
-                    finalBitsToEmbed.Clear(); // 오류 시 비움
+                    // 임베딩 비활성화 또는 데이터 미준비 상태
+                    // finalBitsToEmbed는 이미 비어있으므로 추가 작업 없음
+                    if (!DataManager.IsDataReady && embedActive)
+                    {
+                        // 데이터 로딩이 아직 안 끝났을 수 있음 (경고 로깅은 선택사항)
+                        Debug.LogWarning("[LSBRenderPass] 데이터가 아직 준비되지 않아 임베딩을 건너<0xEB><0x91>니다.");
+                    }
                 }
-            }
-            // <<< 변경/추가된 부분 끝 >>>
-            else
-            {
-                // 임베딩 비활성화 또는 데이터 미준비 상태
-                // finalBitsToEmbed는 이미 비어있으므로 추가 작업 없음
-                if (!DataManager.IsDataReady && embedActive)
-                {
-                    // 데이터 로딩이 아직 안 끝났을 수 있음 (경고 로깅은 선택사항)
-                    Debug.LogWarning("[LSBRenderPass] 데이터가 아직 준비되지 않아 임베딩을 건너<0xEB><0x91>니다.");
-                }
-            }
 
-            // 최종 비트스트림으로 ComputeBuffer 업데이트 (데이터 없으면 버퍼 해제됨)
-            UpdateBitstreamBuffer(finalBitsToEmbed);
+                // 최종 비트스트림으로 ComputeBuffer 업데이트 (데이터 없으면 버퍼 해제됨)
+                UpdateBitstreamBuffer(finalBitsToEmbed, width, height);
+            }
 
             // --- 셰이더 파라미터 설정 ---
             if (kernelID >= 0)
@@ -206,8 +214,8 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
                 cmd.SetComputeTextureParam(computeShader, kernelID, "Source", sourceTextureHandle);
                 cmd.SetComputeTextureParam(computeShader, kernelID, "Output", outputTextureHandle);
-                cmd.SetComputeIntParam(computeShader, "Width", desc.width);
-                cmd.SetComputeIntParam(computeShader, "Height", desc.height);
+                cmd.SetComputeIntParam(computeShader, "Width", width);
+                cmd.SetComputeIntParam(computeShader, "Height", height);
 
                 // Bitstream 버퍼 설정은 유효할 때만 (shouldEmbed 조건 대신 bufferValid 사용)
                 if (bufferValid && currentBitLength > 0) // 버퍼가 실제로 유효할 때만 바인딩 시도

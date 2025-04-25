@@ -1,0 +1,325 @@
+﻿// DWT_HLSL.compute (가정)
+
+#pragma kernel DWT_Pass1_Rows
+#pragma kernel DWT_Pass2_Cols_EmbedSS // 커널 이름 변경 (SS 명시)
+#pragma kernel IDWT_Pass1_Cols
+#pragma kernel IDWT_Pass2_Rows
+
+// --- 공통 설정 ---
+#define BLOCK_SIZE 8
+#define BLOCK_SIZE_FLOAT 8.0f
+#define HALF_BLOCK_SIZE (BLOCK_SIZE / 2)
+#define HH_COEFFS_PER_BLOCK (HALF_BLOCK_SIZE * HALF_BLOCK_SIZE) // 16
+
+// --- DWT 관련 상수 ---
+#define HAAR_SCALE 0.5f
+
+// --- 워터마킹 파라미터 (C#에서 설정) ---
+float EmbeddingStrength;
+uint CoefficientsToUse; // 블록당 사용할 계수 개수 (HH 영역 내)
+
+// --- 전역 변수 (C#에서 설정) ---
+uint Width;
+uint Height;
+uint BitLength; // 실제 삽입될 총 비트 수
+uint Embed; // 0: 비활성, 1: 활성
+
+// --- 입출력 텍스처 (RGB 처리용으로 변경) ---
+Texture2D<float4> Source; // 원본 RGBA (A는 사용 안함)
+RWTexture2D<float3> IntermediateBuffer; // 중간 RGB 저장 (행 DWT 결과 or 열 IDWT 결과)
+RWTexture2D<float3> DWTOutput; // 최종 RGB DWT 계수 저장
+RWTexture2D<float4> IDWTOutput; // 최종 복원 RGBA
+
+// --- 입력 버퍼 ---
+StructuredBuffer<uint> Bitstream;
+StructuredBuffer<float> PatternBuffer; // 확산 패턴 버퍼 (+1/-1 가정)
+
+// --- 공유 메모리 (RGB용으로 변경) ---
+groupshared float3 SharedBlockRGB[BLOCK_SIZE][BLOCK_SIZE];
+
+// --- 1D Haar DWT 함수 (In-Place 방식, 1 레벨) ---
+// 입력: data (길이 BLOCK_SIZE), 출력: data 배열에 직접 덮어씀
+// 결과: data[0..HALF_BLOCK_SIZE-1] = 평균(Approx), data[HALF_BLOCK_SIZE..BLOCK_SIZE-1] = 차이(Detail)
+void Haar_DWT_1D_InPlace(float data[BLOCK_SIZE])
+{
+    float temp[BLOCK_SIZE]; // 임시 저장 공간
+
+    // DWT 레벨 1 수행 (Haar)
+    for (uint i = 0; i < HALF_BLOCK_SIZE; ++i)
+    {
+        float a = data[2 * i];
+        float b = data[2 * i + 1];
+        temp[i] = (a + b) * HAAR_SCALE; // 평균 (Approx)
+        temp[i + HALF_BLOCK_SIZE] = (a - b) * HAAR_SCALE; // 차이 (Detail)
+    }
+
+    // 결과를 원본 배열에 복사
+    for (uint j = 0; j < BLOCK_SIZE; ++j)
+    {
+        data[j] = temp[j];
+    }
+
+    // 다중 레벨 DWT를 원하면 여기서 temp[0..HALF_BLOCK_SIZE/2-1] 영역에 대해 재귀적으로 호출
+}
+
+// --- 1D Inverse Haar DWT 함수 (In-Place 방식, 1 레벨) ---
+// 입력: data (길이 BLOCK_SIZE), Approx는 앞 절반, Detail은 뒤 절반에 저장되어 있다고 가정
+// 출력: data 배열에 복원된 값으로 덮어씀
+void Haar_IDWT_1D_InPlace(float data[BLOCK_SIZE])
+{
+    float temp[BLOCK_SIZE]; // 임시 저장 공간
+
+    // IDWT 레벨 1 수행 (Haar)
+    for (uint i = 0; i < HALF_BLOCK_SIZE; ++i)
+    {
+        float avg = data[i]; // 평균 (Approx)
+        float diff = data[i + HALF_BLOCK_SIZE]; // 차이 (Detail)
+        // HAAR_SCALE로 나눴으므로 복원 시에는 곱하기 2 (또는 1/HAAR_SCALE)
+        temp[2 * i] = avg + diff; // 원본 a = avg + diff
+        temp[2 * i + 1] = avg - diff; // 원본 b = avg - diff
+    }
+
+    // 결과를 원본 배열에 복사
+    for (uint j = 0; j < BLOCK_SIZE; ++j)
+    {
+        data[j] = temp[j];
+    }
+    // 다중 레벨 IDWT는 재귀적으로 수행
+}
+
+// ==============================================
+// DWT Pass 1: Rows (RGB 채널 Row DWT)
+// ==============================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void DWT_Pass1_Rows(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    uint blockX = groupID.x * BLOCK_SIZE;
+    uint blockY = groupID.y * BLOCK_SIZE;
+    uint threadX = groupThreadID.x; // 열 인덱스
+    uint threadY = groupThreadID.y; // 행 인덱스 - 이 스레드가 처리할 행
+
+    // 1. 블록의 한 행(row) 로드 (RGB) 및 공유 메모리 저장
+    uint loadX = blockX + threadX;
+    uint loadY = blockY + threadY;
+    float3 pixelRGB = float3(0, 0, 0);
+
+    if (loadX < Width && loadY < Height)
+    {
+        pixelRGB = Source.Load(int3(loadX, loadY, 0)).rgb;
+    }
+    // YCbCr 변환 및 ChromaBuffer 쓰기 삭제
+    SharedBlockRGB[threadY][threadX] = pixelRGB;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 2. 각 스레드는 담당 행(threadY)의 R, G, B 데이터에 대해 1D DWT 수행
+    // 공유 메모리에서 자신의 행 데이터를 로컬 배열로 가져오기 (채널별)
+    float rowDataR[BLOCK_SIZE], rowDataG[BLOCK_SIZE], rowDataB[BLOCK_SIZE];
+    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    {
+        rowDataR[i] = SharedBlockRGB[threadY][i].r;
+        rowDataG[i] = SharedBlockRGB[threadY][i].g;
+        rowDataB[i] = SharedBlockRGB[threadY][i].b;
+    }
+
+    // 각 채널별 1D DWT 수행
+    Haar_DWT_1D_InPlace(rowDataR);
+    Haar_DWT_1D_InPlace(rowDataG);
+    Haar_DWT_1D_InPlace(rowDataB);
+
+    // 3. DWT 변환된 RGB 결과를 IntermediateBufferRGB에 쓰기
+    uint writeX = blockX + threadX;
+    uint writeY = blockY + threadY;
+    if (writeX < Width && writeY < Height)
+    {
+        // 스레드의 열(threadX) 위치에 해당하는 변환 결과 저장
+        IntermediateBuffer[uint2(writeX, writeY)] = float3(rowDataR[threadX], rowDataG[threadX], rowDataB[threadX]);
+    }
+}
+
+
+// =========================================================
+// DWT Pass 2: Columns + Spread Spectrum Embedding (RGB 채널)
+// =========================================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void DWT_Pass2_Cols_EmbedSS(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    uint blockX = groupID.x * BLOCK_SIZE;
+    uint blockY = groupID.y * BLOCK_SIZE;
+    uint threadX = groupThreadID.x; // 열 인덱스 u (블록 내)
+    uint threadY = groupThreadID.y; // 행 인덱스 v (블록 내)
+
+    // 1. 블록의 한 열(column) RGB 데이터를 공유 메모리로 로드 (IntermediateBufferRGB 에서)
+    uint loadX = blockX + threadX;
+    uint loadY = blockY + threadY;
+    float3 loadedRGB = float3(0, 0, 0);
+    if (loadX < Width && loadY < Height)
+    {
+        loadedRGB = IntermediateBuffer.Load(int3(loadX, loadY, 0));
+    }
+    SharedBlockRGB[threadY][threadX] = loadedRGB;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 2. 각 스레드는 담당 열(threadX)의 R, G, B 데이터에 대해 1D DWT 수행
+    float colDataR[BLOCK_SIZE], colDataG[BLOCK_SIZE], colDataB[BLOCK_SIZE];
+    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    {
+        colDataR[i] = SharedBlockRGB[i][threadX].r;
+        colDataG[i] = SharedBlockRGB[i][threadX].g;
+        colDataB[i] = SharedBlockRGB[i][threadX].b;
+    }
+
+    Haar_DWT_1D_InPlace(colDataR);
+    Haar_DWT_1D_InPlace(colDataG);
+    Haar_DWT_1D_InPlace(colDataB);
+
+    // 이 스레드가 최종적으로 담당할 RGB DWT 계수 값
+    float3 finalDwtCoeffRGB = float3(colDataR[threadY], colDataG[threadY], colDataB[threadY]);
+
+    // --- Spread Spectrum 임베딩 (Per-Thread 방식, RGB 동일 적용) ---
+    if (Embed == 1 && CoefficientsToUse > 0)
+    {
+        uint u_local = threadX;
+        uint v_local = threadY;
+
+        // 임베딩 대상 부대역 결정 (예: HH)
+        if (u_local >= HALF_BLOCK_SIZE && v_local >= HALF_BLOCK_SIZE)
+        {
+            uint u_hh = u_local - HALF_BLOCK_SIZE;
+            uint v_hh = v_local - HALF_BLOCK_SIZE;
+            uint i_in_hh = v_hh * HALF_BLOCK_SIZE + u_hh;
+
+            if (i_in_hh < CoefficientsToUse)
+            {
+                uint numBlocksX = (Width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+                uint blockLinearIndex = groupID.y * numBlocksX + groupID.x;
+
+                if (blockLinearIndex < BitLength)
+                {
+                    uint bit = Bitstream[blockLinearIndex];
+                    float bit_sign = (bit == 1) ? 1.0f : -1.0f;
+                    uint pattern_base_idx = blockLinearIndex * CoefficientsToUse;
+                    uint pattern_idx = pattern_base_idx + i_in_hh;
+
+                    float pattern_value = PatternBuffer[pattern_idx];
+                    float modification = EmbeddingStrength * pattern_value * bit_sign;
+
+                    // ★★★ 계산된 modification 값을 R, G, B 채널에 동일하게 적용 ★★★
+                    finalDwtCoeffRGB += float3(modification, modification, modification);
+                }
+            }
+        }
+        // 다른 부대역에 적용하려면 조건 수정
+    }
+    // --- 임베딩 끝 ---
+
+    // 3. 최종 RGB DWT 계수(수정되었을 수도 있음)를 DWTOutputRGB 텍스처에 쓰기
+    uint writeX_global = blockX + threadX;
+    uint writeY_global = blockY + threadY;
+    if (writeX_global < Width && writeY_global < Height)
+    {
+        DWTOutput[uint2(writeX_global, writeY_global)] = finalDwtCoeffRGB;
+    }
+}
+
+// ==============================================
+// IDWT Pass 1: Columns (RGB 채널 처리)
+// ==============================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void IDWT_Pass1_Cols(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    uint blockX = groupID.x * BLOCK_SIZE;
+    uint blockY = groupID.y * BLOCK_SIZE;
+    uint threadX = groupThreadID.x; // 열 u
+    uint threadY = groupThreadID.y; // 행 v
+
+    // 1. 블록의 RGB DWT 계수 한 열(column)을 공유 메모리로 로드 (DWTOutputRGB 에서)
+    uint loadX = blockX + threadX;
+    uint loadY = blockY + threadY;
+    float3 loadedCoeffRGB = float3(0, 0, 0);
+    if (loadX < Width && loadY < Height)
+    {
+        loadedCoeffRGB = DWTOutput.Load(int3(loadX, loadY, 0));
+    }
+    SharedBlockRGB[threadY][threadX] = loadedCoeffRGB;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 2. 각 스레드는 담당 열(threadX)의 R, G, B 데이터에 대해 1D IDWT 수행
+    float colDataR[BLOCK_SIZE], colDataG[BLOCK_SIZE], colDataB[BLOCK_SIZE];
+    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    {
+        colDataR[i] = SharedBlockRGB[i][threadX].r;
+        colDataG[i] = SharedBlockRGB[i][threadX].g;
+        colDataB[i] = SharedBlockRGB[i][threadX].b;
+    }
+
+    Haar_IDWT_1D_InPlace(colDataR);
+    Haar_IDWT_1D_InPlace(colDataG);
+    Haar_IDWT_1D_InPlace(colDataB);
+
+    // 3. 중간 RGB 결과를 IntermediateBufferRGB에 쓰기
+    uint writeX = blockX + threadX;
+    uint writeY = blockY + threadY;
+    if (writeX < Width && writeY < Height)
+    {
+        IntermediateBuffer[uint2(writeX, writeY)] = float3(colDataR[threadY], colDataG[threadY], colDataB[threadY]);
+    }
+}
+
+// ========================================================
+// IDWT Pass 2: Rows (RGB 채널 처리 및 최종 출력)
+// ========================================================
+[numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]
+void IDWT_Pass2_Rows(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    uint blockX = groupID.x * BLOCK_SIZE;
+    uint blockY = groupID.y * BLOCK_SIZE;
+    uint threadX = groupThreadID.x; // 최종 픽셀 x
+    uint threadY = groupThreadID.y; // 최종 픽셀 y - 이 스레드가 처리할 행
+
+    // 1. 블록의 한 행(row) 중간 RGB 데이터를 공유 메모리로 로드 (IntermediateBufferRGB 에서)
+    uint loadX = blockX + threadX;
+    uint loadY = blockY + threadY;
+    float3 loadedRGBPrime = float3(0, 0, 0);
+    if (loadX < Width && loadY < Height)
+    {
+        loadedRGBPrime = IntermediateBuffer.Load(int3(loadX, loadY, 0));
+    }
+    SharedBlockRGB[threadY][threadX] = loadedRGBPrime;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // 2. 각 스레드는 담당 행(threadY)의 R, G, B 데이터에 대해 1D IDWT 수행
+    float rowDataR[BLOCK_SIZE], rowDataG[BLOCK_SIZE], rowDataB[BLOCK_SIZE];
+    for (uint i = 0; i < BLOCK_SIZE; ++i)
+    {
+        rowDataR[i] = SharedBlockRGB[threadY][i].r;
+        rowDataG[i] = SharedBlockRGB[threadY][i].g;
+        rowDataB[i] = SharedBlockRGB[threadY][i].b;
+    }
+
+    Haar_IDWT_1D_InPlace(rowDataR);
+    Haar_IDWT_1D_InPlace(rowDataG);
+    Haar_IDWT_1D_InPlace(rowDataB);
+
+    float finalPixelValueR = rowDataR[threadX];
+    float finalPixelValueG = rowDataG[threadX];
+    float finalPixelValueB = rowDataB[threadX];
+
+    // 3. CbCr 로드 및 결합 삭제, RGB 변환 함수 호출 삭제
+    float3 finalRGB = float3(finalPixelValueR, finalPixelValueG, finalPixelValueB);
+
+    // 4. 최종 RGB 픽셀 값을 IDWTOutput 텍스처에 쓰기 (saturate 적용)
+    uint writeX_global = blockX + threadX;
+    uint writeY_global = blockY + threadY;
+    if (writeX_global < Width && writeY_global < Height)
+    {
+        IDWTOutput[uint2(writeX_global, writeY_global)] = float4(saturate(finalRGB.rgb), 1.0f);
+    }
+    else
+    {
+        IDWTOutput[uint2(writeX_global, writeY_global)] = float4(0, 0, 0, 1); // 패딩
+    }
+}
