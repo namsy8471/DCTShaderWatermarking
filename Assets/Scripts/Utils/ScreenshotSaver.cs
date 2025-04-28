@@ -224,16 +224,20 @@ public class ScreenshotSaver : MonoBehaviour
                     float b_lin = floatData[i * 4 + 2];
                     float a_lin = floatData[i * 4 + 3]; // 알파값은 보통 그대로 사용
 
-                    // Linear -> sRGB 변환 (감마 보정)
-                    float r_srgb = Mathf.Pow(r_lin, 1.0f / 2.2f);
-                    float g_srgb = Mathf.Pow(g_lin, 1.0f / 2.2f);
-                    float b_srgb = Mathf.Pow(b_lin, 1.0f / 2.2f);
+                    // Color 구조체 생성 (Linear 값)
+                    Color linearColor = new(r_lin, g_lin, b_lin, a_lin);
 
-                    // [0, 1] 범위를 [0, 255] byte 범위로 변환 및 클램핑
-                    processedPixelData[i * 4 + 0] = (byte)(Mathf.Clamp01(r_srgb) * 255);
-                    processedPixelData[i * 4 + 1] = (byte)(Mathf.Clamp01(g_srgb) * 255);
-                    processedPixelData[i * 4 + 2] = (byte)(Mathf.Clamp01(b_srgb) * 255);
-                    processedPixelData[i * 4 + 3] = (byte)(Mathf.Clamp01(a_lin) * 255);
+                    // *** Unity의 내장 변환 사용 ***
+                    Color srgbColor = linearColor.gamma; // Linear -> sRGB 변환
+
+                    // Color (float 0-1) -> Color32 (byte 0-255) 변환 (자동 클램핑 및 스케일링)
+                    Color32 srgbColor32 = srgbColor;
+
+                    // byte 배열에 저장
+                    processedPixelData[i * 4 + 0] = srgbColor32.r;
+                    processedPixelData[i * 4 + 1] = srgbColor32.g;
+                    processedPixelData[i * 4 + 2] = srgbColor32.b;
+                    processedPixelData[i * 4 + 3] = srgbColor32.a;
                 }
 
                 // 변환된 byte 데이터를 sRGB Texture2D에 로드

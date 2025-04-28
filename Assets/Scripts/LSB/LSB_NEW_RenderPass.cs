@@ -120,7 +120,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
             var desc = renderingData.cameraData.cameraTargetDescriptor;
             desc.depthBufferBits = 0; 
             desc.msaaSamples = 1;
-            desc.sRGB = false; // sRGB 비활성화
+            //desc.sRGB = false; // sRGB 비활성화
 
             var outputDesc = desc;
             outputDesc.enableRandomWrite = true;

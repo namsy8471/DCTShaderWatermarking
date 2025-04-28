@@ -31,7 +31,7 @@ MonoBehaviour:
   m_Active: 0
   dwtComputeShader: {fileID: 7200000, guid: 2ff55af08f5b56840879091c9ce9614d, type: 3}
   embedBitstream: 1
-  embeddingStrength: 0.002
+  embeddingStrength: 0.01
   addressableKey: OriginBlockData
   coefficientsToUse: 16
 --- !u!114 &-6575308690640035461
@@ -97,7 +97,7 @@ MonoBehaviour:
   ssRgbDctComputeShader: {fileID: 7200000, guid: cbfaad5dcbaf5614595a14f8c0cfcff7,
     type: 3}
   embedBitstream: 1
-  embeddingStrength: 0.000432
+  embeddingStrength: 0.001
   secretKey: OriginBlockData
   coefficientsToUse: 63
 --- !u!114 &-1898557105666974581
