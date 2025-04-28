@@ -1,0 +1,20 @@
+--- Benchmark Results (DCT-SS) ---
+Timestamp: 2025-04-25 11:00:02
+Duration: 180.01s (Target: 180s)
+Total Frames: 19272
+
+[FPS Metrics]
+  Average: 107.06 FPS
+  Minimum: 1.38 FPS
+  Maximum: 151.00 FPS
+  1% Low:  19.25 FPS
+
+[CPU Time (ms)]
+  Main Thread Avg: 9.33 ms
+  Main Thread Max: 726.27 ms
+[GPU Time (ms)]
+  GPU Frame Time Avg: 1.57 ms
+  GPU Frame Time Max: 18.89 ms
+
+Results saved to: E:\Github\DCTShaderWatermarking\Benchmark_DCT-SS_2025-04-25_10-56-57.txt
+----------------------------------------

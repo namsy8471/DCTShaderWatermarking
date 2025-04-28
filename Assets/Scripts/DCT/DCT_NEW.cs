@@ -88,7 +88,6 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
         private RTHandle intermediateBufferRGBHandle; // ARGBFloat (Intermediate RGB')
         private RTHandle dctOutputRGBHandle;        // ARGBFloat (Final RGB DCT Coeffs)
         private RTHandle finalOutputHandle;         // ARGBFloat (Final RGB Output)
-        // ChromaBuffer는 사용 안 함
 
         // Compute Buffers
         private ComputeBuffer bitstreamBuffer;
@@ -145,7 +144,7 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
 
         // --- Buffer 관리 (이전 SS 버전과 유사) ---
         private void UpdateBitstreamBuffer(List<uint> data)
-        { /* ... 이전 SS 버전과 동일 ... */
+        { 
             int count = (data != null) ? data.Count : 0;
             if (count == 0) { ReleaseBitstreamBuffer(); return; }
             if (bitstreamBuffer == null || !bitstreamBuffer.IsValid() || bitstreamBuffer.count != count)
@@ -196,8 +195,12 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
             if (kernelPass1 < 0 || kernelPass2 < 0 || kernelPass3 < 0 || kernelPass4 < 0 || computeShader == null) return;
 
             var desc = renderingData.cameraData.cameraTargetDescriptor;
-            desc.depthBufferBits = 0; desc.msaaSamples = 1; desc.sRGB = false;
-            int width = desc.width; int height = desc.height;
+            desc.depthBufferBits = 0;
+            desc.msaaSamples = 1;
+            desc.sRGB = false;
+            int width = desc.width;
+            int height = desc.height;
+            
             if (width <= 0 || height <= 0) return;
 
             // RT Handles 할당 (RGB 처리용 - ARGBFloat 사용)

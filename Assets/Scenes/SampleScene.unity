@@ -827,7 +827,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 054fde7431a42ef43b6c9e9a2075a675, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  testIdentifier: DWT
+  testIdentifier: "DCT-SS \uAC15\uB3C4 0.00109 \uACC4\uC218 63"
   benchmarkDuration: 180
   warmupDuration: 5
   quitAfterBenchmark: 1
@@ -875,9 +875,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   extractionKey: 293
   extractionMode: 2
-  logPixelValues: 0
+  logPixelValues: 1
   ssSecretKey: OriginBlockData
-  ssCoefficientsToUse: 20
+  ssCoefficientsToUse: 8
   sourceRT: {fileID: 0}
 --- !u!114 &572246015
 MonoBehaviour:

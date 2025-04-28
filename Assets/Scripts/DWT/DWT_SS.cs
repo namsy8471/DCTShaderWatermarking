@@ -7,6 +7,7 @@ using System.Linq;
 using System;
 using Unity.Collections;
 using System.IO;
+using System.Net.NetworkInformation;
 
 // OriginBlock 클래스가 동일 프로젝트 내에 정의되어 있다고 가정
 // DataManager 클래스가 동일 프로젝트 내에 정의되어 있다고 가정
@@ -21,11 +22,12 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
     public bool embedBitstream = true;
     [Tooltip("확산 스펙트럼 임베딩 강도")]
     public float embeddingStrength = 0.05f; // 강도 조절 파라미터 추가 (값 조절 필요)
-    [Tooltip("블록당 사용할 확산 스펙트럼 계수 개수 (예: HH 영역 내)")]
-    public uint coefficientsToUse = 10; // 사용할 계수 개수 추가 (최대 16개 - 8x8블록 HH)
-
     [Tooltip("Addressables에서 로드할 암호화된 데이터 키")]
     public string addressableKey = "OriginBlockData";
+    [Tooltip("블록당 사용할 확산 스펙트럼 계수 개수 (예: HH 영역 내)")]
+    [Range(1,16)]
+    public uint coefficientsToUse = 10; // 사용할 계수 개수 추가 (최대 16개 - 8x8블록 HH)
+
 
     private DWTRenderPass dwtRenderPass;
 
@@ -38,7 +40,7 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
         }
 
         // Pass 생성 시 파라미터 전달
-        dwtRenderPass = new DWTRenderPass(dwtComputeShader, name, embedBitstream, embeddingStrength, coefficientsToUse);
+        dwtRenderPass = new DWTRenderPass(dwtComputeShader, name, embedBitstream, embeddingStrength, coefficientsToUse, addressableKey);
         dwtRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
     }
 
@@ -89,6 +91,8 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
         private bool embedActive;
         private float currentEmbeddingStrength; // 현재 강도 저장
         private uint currentCoefficientsToUse; // 현재 사용할 계수 개수 저장
+        private string secretKey;
+
         private ComputeBuffer bitstreamBuffer;
         private ComputeBuffer patternBuffer; // 확산 패턴 버퍼 추가
 
@@ -99,13 +103,14 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
         private const int HALF_BLOCK_SIZE = BLOCK_SIZE / 2;
         private const int HH_COEFFS_PER_BLOCK = HALF_BLOCK_SIZE * HALF_BLOCK_SIZE; // 4x4 = 16
 
-        public DWTRenderPass(ComputeShader shader, string tag, bool initialEmbedState, float initialStrength, uint initialCoeffs)
+        public DWTRenderPass(ComputeShader shader, string tag, bool initialEmbedState, float initialStrength, uint initialCoeffs, string secretKey)
         {
             computeShader = shader;
             profilerTag = tag;
             embedActive = initialEmbedState;
             currentEmbeddingStrength = initialStrength;
             currentCoefficientsToUse = initialCoeffs;
+            this.secretKey = secretKey; // Addressables에서 로드할 키 저장
 
             dwtRowsKernelID = shader.FindKernel("DWT_Pass1_Rows");
             dwtColsKernelID = shader.FindKernel("DWT_Pass2_Cols_EmbedSS"); // 커널 이름 변경 제안 (SS 명시)
@@ -155,25 +160,26 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
             if (currentPatternData == null || currentPatternData.Count != requiredPatternSize)
             {
                 Debug.Log($"[DWTRenderPass] Pattern Buffer 생성/업데이트 필요. 요구 크기: {requiredPatternSize}");
-                GeneratePatternData(requiredPatternSize);
+                GeneratePatternData(requiredPatternSize, secretKey);
                 UpdatePatternComputeBuffer();
             }
             // 이미 있다면 업데이트 불필요 (매 프레임 생성 방지)
         }
 
-        private void GeneratePatternData(int size)
+        private void GeneratePatternData(int size, string secretKey)
         {
             currentPatternData = new List<float>(size);
-            System.Random random = new System.Random(); // 시드값 필요시 고정
+            System.Random random = new System.Random(secretKey.GetHashCode());
             for (int i = 0; i < size; i++)
             {
                 // +1 또는 -1 랜덤 생성
-                currentPatternData.Add((random.Next(0, 2) == 0) ? -1.0f : 1.0f);
+                currentPatternData.Add((random.NextDouble() < 0.5) ? -1.0f : 1.0f);
+
             }
             // 첫 64개 패턴 로그 출력 (디버깅용)
-            // int logLength = Math.Min(currentPatternData.Count, 64);
-            // string firstPatterns = string.Join(", ", currentPatternData.Take(logLength).Select(p => p.ToString("F1")));
-            // Debug.Log($"[DWTRenderPass] 생성된 패턴 데이터 (처음 {logLength}개): [{firstPatterns}]");
+            int logLength = Math.Min(currentPatternData.Count, 64);
+            string firstPatterns = string.Join(", ", currentPatternData.Take(logLength).Select(p => p.ToString("F1")));
+            Debug.Log($"[DWTRenderPass] 생성된 패턴 데이터 (처음 {logLength}개): [{firstPatterns}]");
         }
 
         private void UpdatePatternComputeBuffer()
@@ -246,21 +252,14 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
             desc.msaaSamples = 1;
             desc.sRGB = false;
 
-            var intermediateDesc = desc;
-            intermediateDesc.colorFormat = RenderTextureFormat.ARGBFloat;
-            intermediateDesc.enableRandomWrite = true;
-
-            var dwtDesc = desc;
-            dwtDesc.colorFormat = RenderTextureFormat.ARGBFloat;
-            dwtDesc.enableRandomWrite = true;
-
-            var idwtDesc = desc;
-            idwtDesc.enableRandomWrite = true;
+            var bufferDesc = desc;
+            bufferDesc.colorFormat = RenderTextureFormat.ARGBFloat;
+            bufferDesc.enableRandomWrite = true;
 
             RenderingUtils.ReAllocateIfNeeded(ref sourceTextureHandle, desc, FilterMode.Point, name: "_SourceCopyForDWT");
-            RenderingUtils.ReAllocateIfNeeded(ref intermediateHandle, intermediateDesc, FilterMode.Point, name: "_IntermediateDWT_IDWT");
-            RenderingUtils.ReAllocateIfNeeded(ref dwtOutputHandle, dwtDesc, FilterMode.Point, name: "_DWTOutput");
-            RenderingUtils.ReAllocateIfNeeded(ref idwtOutputHandle, idwtDesc, FilterMode.Point, name: "_IDWTOutput");
+            RenderingUtils.ReAllocateIfNeeded(ref intermediateHandle, bufferDesc, FilterMode.Point, name: "_IntermediateDWT_IDWT");
+            RenderingUtils.ReAllocateIfNeeded(ref dwtOutputHandle, bufferDesc, FilterMode.Point, name: "_DWTOutput");
+            RenderingUtils.ReAllocateIfNeeded(ref idwtOutputHandle, bufferDesc, FilterMode.Point, name: "_IDWTOutput");
 
             // --- 비트스트림 준비 (기존 로직 재사용) ---
 

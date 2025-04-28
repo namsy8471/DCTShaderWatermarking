@@ -21,9 +21,9 @@ public class RealtimeExtractorDebug : MonoBehaviour
     public ExtractionMode extractionMode = ExtractionMode.DCT_SS; // 추출 모드 선택
     public bool logPixelValues = false; // 디버깅용: 첫 픽셀 값 로깅 여부
 
-    [Header("SS 설정 (DCT_SS 모드 시 사용)")]
+    [Header("SS 설정 (DCT_SS 또는 DWT_SS 모드 시 사용)")]
     [Tooltip("패턴 생성용 Secret Key (삽입 시와 동일해야 함)")]
-    public string ssSecretKey = "default_secret_key_rgb_ss"; // 삽입 시 사용한 키와 일치 필요
+    public string ssSecretKey = "OriginBlockData"; // 삽입 시 사용한 키와 일치 필요
     [Tooltip("1블록당 사용하는 AC 계수 수 (삽입 시와 동일해야 함)")]
     [Range(1, 63)]
     public int ssCoefficientsToUse = 10; // 삽입 시 사용한 개수와 일치 필요
@@ -34,6 +34,8 @@ public class RealtimeExtractorDebug : MonoBehaviour
 
     private bool isRequestPending = false; // 중복 요청 방지 플래그
     private const int BLOCK_SIZE = 8;      // 처리 블록 크기 (HLSL과 일치)
+    private const int HALF_BLOCK_SIZE = BLOCK_SIZE / 2; // DWT용
+    private const int HH_COEFFS_PER_BLOCK = HALF_BLOCK_SIZE * HALF_BLOCK_SIZE; // 16
     private const int SYNC_PATTERN_LENGTH = 64; // ★★★ 동기화 패턴 비트 수 (실제 길이에 맞게 수정 필요) ★★★
 
     // 동기화 패턴 정의 (실제 사용하는 동기화 패턴으로 교체 필요)
@@ -47,6 +49,7 @@ public class RealtimeExtractorDebug : MonoBehaviour
     private const double MATH_PI = 3.141592653589793;
     private readonly double DCT_SQRT1_N = 1.0 / Math.Sqrt(BLOCK_SIZE); // 1/sqrt(8)
     private readonly double DCT_SQRT2_N = Math.Sqrt(2.0 / BLOCK_SIZE); // sqrt(2/8) = 0.5
+    private const float HAAR_SCALE = 0.5f; // DWT Haar 스케일
 
     void Start()
     {
@@ -152,28 +155,18 @@ public class RealtimeExtractorDebug : MonoBehaviour
                 Debug.Log($"Total Blocks: {totalBlocks} ({numBlocksX}x{numBlocksY}), Bits to Extract: {bitsToExtract}");
 
                 // 패턴 버퍼 생성
-                float[] patternBuffer = new float[totalBlocks * ssCoefficientsToUse];
-                System.Random prng = new System.Random(ssSecretKey.GetHashCode());
-                for (int i = 0; i < patternBuffer.Length; ++i) patternBuffer[i] = (prng.NextDouble() < 0.5) ? -1f : 1f;
 
+                float[] patternBuffer = GeneratePatternBuffer(totalBlocks, ssCoefficientsToUse, ssSecretKey);
+                
                 // 지그재그 인덱스
-                Vector2Int[] zigzag = { /* ... 이전과 동일 ... */
-                    new Vector2Int(0, 1), new Vector2Int(1, 0), new Vector2Int(2, 0), new Vector2Int(1, 1), new Vector2Int(0, 2), new Vector2Int(0, 3), new Vector2Int(1, 2), new Vector2Int(2, 1),
-                    new Vector2Int(3, 0), new Vector2Int(4, 0), new Vector2Int(3, 1), new Vector2Int(2, 2), new Vector2Int(1, 3), new Vector2Int(0, 4), new Vector2Int(0, 5), new Vector2Int(1, 4),
-                    new Vector2Int(2, 3), new Vector2Int(3, 2), new Vector2Int(4, 1), new Vector2Int(5, 0), new Vector2Int(6, 0), new Vector2Int(5, 1), new Vector2Int(4, 2), new Vector2Int(3, 3),
-                    new Vector2Int(2, 4), new Vector2Int(1, 5), new Vector2Int(0, 6), new Vector2Int(0, 7), new Vector2Int(1, 6), new Vector2Int(2, 5), new Vector2Int(3, 4), new Vector2Int(4, 3),
-                    new Vector2Int(5, 2), new Vector2Int(6, 1), new Vector2Int(7, 0), new Vector2Int(7, 1), new Vector2Int(6, 2), new Vector2Int(5, 3), new Vector2Int(4, 4), new Vector2Int(3, 5),
-                    new Vector2Int(2, 6), new Vector2Int(1, 7), new Vector2Int(2, 7), new Vector2Int(3, 6), new Vector2Int(4, 5), new Vector2Int(5, 4), new Vector2Int(6, 3), new Vector2Int(7, 2),
-                    new Vector2Int(7, 3), new Vector2Int(6, 4), new Vector2Int(5, 5), new Vector2Int(4, 6), new Vector2Int(3, 7), new Vector2Int(4, 7), new Vector2Int(5, 6), new Vector2Int(6, 5),
-                    new Vector2Int(7, 4), new Vector2Int(7, 5), new Vector2Int(6, 6), new Vector2Int(5, 7), new Vector2Int(6, 7), new Vector2Int(7, 6), new Vector2Int(7, 7)
-                    };
+                Vector2Int[] zigzag = GetZigZagIndices();
                 if (ssCoefficientsToUse > zigzag.Length) ssCoefficientsToUse = zigzag.Length;
 
                 // 임시 배열 선언 (CPU DCT용)
                 float[,] blockR = new float[BLOCK_SIZE, BLOCK_SIZE];
                 float[,] blockG = new float[BLOCK_SIZE, BLOCK_SIZE]; // 필요시 G, B도 처리
                 float[,] blockB = new float[BLOCK_SIZE, BLOCK_SIZE];
-                
+
                 double[,] dctCoeffsR = new double[BLOCK_SIZE, BLOCK_SIZE]; // DCT 결과 저장용 (double)
                 double[,] dctCoeffsG = new double[BLOCK_SIZE, BLOCK_SIZE]; // DCT 결과 저장용 (double)
                 double[,] dctCoeffsB = new double[BLOCK_SIZE, BLOCK_SIZE]; // DCT 결과 저장용 (double)
@@ -183,23 +176,9 @@ public class RealtimeExtractorDebug : MonoBehaviour
                 {
                     int blockY = blockIdx / numBlocksX; int blockX = blockIdx % numBlocksX;
 
-                    // ★★★ 1. 현재 블록의 픽셀 데이터 추출 (R 채널만) ★★★
-                    for (int y = 0; y < BLOCK_SIZE; ++y)
-                    {
-                        for (int x = 0; x < BLOCK_SIZE; ++x)
-                        {
-                            int pixelX = blockX * BLOCK_SIZE + x;
-                            int pixelY = blockY * BLOCK_SIZE + y;
-                            if (pixelX < width && pixelY < height)
-                            {
-                                int dataIndex = (pixelY * width + pixelX) * 4; // R 채널 인덱스
-                                if (dataIndex < pixelData.Length) blockR[y, x] = pixelData[dataIndex];
-                                else blockR[y, x] = 0f;
-                            }
-                            else { blockR[y, x] = 0f; }
-                        }
-                    }
-
+                    // ★★★ 1. 현재 블록의 픽셀 데이터 추출 (RGB 채널) ★★★
+                    ExtractBlockData(pixelData, width, height, blockIdx, numBlocksX, blockR, blockG, blockB);
+                    
                     // ★★★ 2. 추출된 블록에 대해 CPU에서 2D DCT 수행 ★★★
                     DCT2D_CPU(blockR, dctCoeffsR); // R 채널 DCT 수행
                     DCT2D_CPU(blockG, dctCoeffsG); // R 채널 DCT 수행
@@ -237,30 +216,132 @@ public class RealtimeExtractorDebug : MonoBehaviour
                 }
 
             }
+            // --- ★★★ DWT Spread Spectrum 추출 로직 ★★★ ---
+            else if (extractionMode == ExtractionMode.DWT)
+            {
+                Debug.Log("DWT Spread Spectrum 모드로 비트 추출 시도 (CPU)...");
+                Debug.LogWarning("CPU에서 DWT를 수행합니다. 성능이 매우매우 느릴 것입니다!");
+
+                NativeArray<float> pixelData = request.GetData<float>();
+                Debug.Log($"Readback data as float array (Length: {pixelData.Length}). Expecting {width * height * 4}.");
+                if (logPixelValues && pixelData.Length >= 4) Debug.Log($"[Pixel(0,0)] R={pixelData[0]:G9}, G={pixelData[1]:G9}, B={pixelData[2]:G9}, A={pixelData[3]:G9}");
+
+                int numBlocksX = (width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+                int numBlocksY = (height + BLOCK_SIZE - 1) / BLOCK_SIZE;
+                Debug.Log($"Total Blocks: {totalBlocks} ({numBlocksX}x{numBlocksY}), Bits to Extract: {bitsToExtract}");
+
+                // 패턴 버퍼 생성 (DCT와 동일 방식 사용 가정)
+                if (ssCoefficientsToUse > HH_COEFFS_PER_BLOCK)
+                {
+                    Debug.LogWarning($"DWT CoefficientsToUse({ssCoefficientsToUse})가 HH 블록 크기({HH_COEFFS_PER_BLOCK})보다 큽니다. {HH_COEFFS_PER_BLOCK}로 조정합니다.");
+                    ssCoefficientsToUse = HH_COEFFS_PER_BLOCK; // 최대 16개 (HH 영역)
+                }
+                float[] patternBuffer = GeneratePatternBuffer(totalBlocks, ssCoefficientsToUse, ssSecretKey);
+
+
+                // 임시 배열 선언 (CPU DWT용)
+                float[,] blockR = new float[BLOCK_SIZE, BLOCK_SIZE];
+                float[,] blockG = new float[BLOCK_SIZE, BLOCK_SIZE];
+                float[,] blockB = new float[BLOCK_SIZE, BLOCK_SIZE];
+                double[,] dwtCoeffsR = new double[BLOCK_SIZE, BLOCK_SIZE]; // DWT 결과 저장용 (double)
+                double[,] dwtCoeffsG = new double[BLOCK_SIZE, BLOCK_SIZE];
+                double[,] dwtCoeffsB = new double[BLOCK_SIZE, BLOCK_SIZE];
+
+                // 각 블록 처리
+                for (int blockIdx = 0; blockIdx < bitsToExtract; ++blockIdx)
+                {
+                    // 1. 현재 블록의 픽셀 데이터 추출 (RGB)
+                    ExtractBlockData(pixelData, width, height, blockIdx, numBlocksX, blockR, blockG, blockB);
+
+                    // 2. 추출된 블록에 대해 CPU에서 2D Haar DWT 수행
+                    Haar_DWT_2D_CPU(blockR, dwtCoeffsR); // R 채널 DWT
+                    Haar_DWT_2D_CPU(blockG, dwtCoeffsG); // G 채널 DWT
+                    Haar_DWT_2D_CPU(blockB, dwtCoeffsB); // B 채널 DWT
+
+                    // --- 여기서 CPU에서 계산된 DWT 계수 확인 (디버깅용) ---
+                    if (blockIdx == 0) // 첫 번째 블록에 대해서만 출력 (너무 많으면 로그 과부하)
+                    {
+                        Debug.Log($"[CPU DWT Coeffs Debug] --- Block {blockIdx} HH Subband ---");
+                        // HH 서브밴드 (4x4 크기) 순회
+                        for (int v_hh = 0; v_hh < HALF_BLOCK_SIZE; ++v_hh) // HH 서브밴드 Y축 (0~3)
+                        {
+                            for (int u_hh = 0; u_hh < HALF_BLOCK_SIZE; ++u_hh) // HH 서브밴드 X축 (0~3)
+                            {
+                                int globalV = v_hh + HALF_BLOCK_SIZE; // 전체 8x8 블록 내 Y 인덱스 (4~7)
+                                int globalU = u_hh + HALF_BLOCK_SIZE; // 전체 8x8 블록 내 X 인덱스 (4~7)
+
+                                // dwtCoeffs 배열은 [v, u] 순서로 저장됨
+                                double coeffR = dwtCoeffsR[globalV, globalU];
+                                double coeffG = dwtCoeffsG[globalV, globalU];
+                                double coeffB = dwtCoeffsB[globalV, globalU];
+
+                                Debug.Log($"Block({blockIdx % numBlocksX},{blockIdx / numBlocksX}) HH({u_hh},{v_hh}) @({globalU},{globalV}) | R: {coeffR:G9}, G: {coeffG:G9}, B: {coeffB:G9}");
+                            }
+                        }
+                        Debug.Log("[CPU DWT Coeffs Debug] --------------------------");
+                    }
+                    // --- 디버깅용 로그 끝 ---
+
+
+                    // 3. 계산된 DWT 계수(HH 영역)와 패턴으로 상관관계 계산
+                    double correlationSumR = 0.0;
+                    double correlationSumG = 0.0;
+                    double correlationSumB = 0.0;
+                    int patternBaseIndex = blockIdx * ssCoefficientsToUse;
+
+                    for (int i_hh = 0; i_hh < ssCoefficientsToUse; ++i_hh)
+                    {
+                        // HH 영역 내에서의 로컬 인덱스 계산
+                        int v_hh = i_hh / HALF_BLOCK_SIZE;
+                        int u_hh = i_hh % HALF_BLOCK_SIZE;
+
+                        // 전체 8x8 계수 배열에서의 인덱스 (HH는 우하단)
+                        int v_global = v_hh + HALF_BLOCK_SIZE;
+                        int u_global = u_hh + HALF_BLOCK_SIZE;
+
+                        double coeffValueR = dwtCoeffsR[v_global, u_global];
+                        double coeffValueG = dwtCoeffsG[v_global, u_global];
+                        double coeffValueB = dwtCoeffsB[v_global, u_global];
+
+                        if (patternBaseIndex + i_hh < patternBuffer.Length)
+                        {
+                            float patternValue = patternBuffer[patternBaseIndex + i_hh];
+                            correlationSumR += coeffValueR * patternValue;
+                            correlationSumG += coeffValueG * patternValue;
+                            correlationSumB += coeffValueB * patternValue;
+                        }
+                    }
+
+                    // 4. 비트 판정 (평균 상관관계 사용)
+                    double finalCorrelation = (correlationSumR + correlationSumG + correlationSumB) / 3.0;
+                    extractedBits.Add(finalCorrelation >= 0.0 ? 1 : 0);
+                }
+            } // end for blockIdx
+
             // --- LSB 추출 로직 ---
             else
             { // LSB
                 Debug.Log("LSB 모드로 비트 추출 시도...");
                 NativeArray<byte> byteData = request.GetData<byte>();
-                 /* ... 이전 LSB 로직과 거의 동일 ... */
-                    int bytesPerPixel = (int)GraphicsFormatUtility.GetBlockSize(sourceRT.graphicsFormat);
-                    // ... (로그 및 비트 수 계산) ...
-                    extractedBits.Capacity = bitsToExtract;
+                /* ... 이전 LSB 로직과 거의 동일 ... */
+                int bytesPerPixel = (int)GraphicsFormatUtility.GetBlockSize(sourceRT.graphicsFormat);
+                // ... (로그 및 비트 수 계산) ...
+                extractedBits.Capacity = bitsToExtract;
 
-                    int blueChannelByteOffset = 2; // 기본값 (RGBA32 가정) - 포맷 따라 조정 필요!
-                    var sourceFormat = sourceRT.graphicsFormat;
-                    if (sourceFormat == GraphicsFormat.B8G8R8A8_SRGB || sourceFormat == GraphicsFormat.B8G8R8A8_UNorm) blueChannelByteOffset = 0;
-                    // ... 다른 포맷 검사 ...
+                int blueChannelByteOffset = 2; // 기본값 (RGBA32 가정) - 포맷 따라 조정 필요!
+                var sourceFormat = sourceRT.graphicsFormat;
+                if (sourceFormat == GraphicsFormat.B8G8R8A8_SRGB || sourceFormat == GraphicsFormat.B8G8R8A8_UNorm) blueChannelByteOffset = 0;
+                // ... 다른 포맷 검사 ...
 
-                    for (int i = 0; i < bitsToExtract; ++i)
-                    {
-                        int pixelY = i / width; int pixelX = i % width;
-                        int byteBaseIndex = (pixelY * width + pixelX) * bytesPerPixel;
-                        int blueByteIndex = byteBaseIndex + blueChannelByteOffset;
-                        if (blueByteIndex < byteData.Length) extractedBits.Add(byteData[blueByteIndex] & 1);
-                        else extractedBits.Add(0);
-                    }
-                
+                for (int i = 0; i < bitsToExtract; ++i)
+                {
+                    int pixelY = i / width; int pixelX = i % width;
+                    int byteBaseIndex = (pixelY * width + pixelX) * bytesPerPixel;
+                    int blueByteIndex = byteBaseIndex + blueChannelByteOffset;
+                    if (blueByteIndex < byteData.Length) extractedBits.Add(byteData[blueByteIndex] & 1);
+                    else extractedBits.Add(0);
+                }
+
             }
 
             // 1. 비교 대상이 될 전체 예상 비트스트림 생성 (헤더 포함)
@@ -294,197 +375,6 @@ public class RealtimeExtractorDebug : MonoBehaviour
         }
         catch (Exception e) { Debug.LogError($"추출/처리 중 오류 발생: {e.Message}\n{e.StackTrace}"); }
         finally { isRequestPending = false; }
-    }
-
-    private void CompareAgainstFullExpected(List<int> extracted, List<uint> expected)
-    {
-        if (extracted == null || extracted.Count == 0) { Debug.LogError("추출된 비트가 없습니다!"); return; }
-        if (expected == null || expected.Count == 0) { Debug.LogError("비교할 예상 비트가 없습니다!"); return; }
-
-        int compareLength = Math.Min(extracted.Count, expected.Count); // 실제 비교 가능한 길이
-        Debug.Log($"Comparing {compareLength} bits...");
-
-        StringBuilder extractedSb = new StringBuilder(compareLength);
-        StringBuilder expectedSb = new StringBuilder(compareLength);
-        StringBuilder diffMarker = new StringBuilder(compareLength);
-        bool match = true;
-        int mismatchCount = 0;
-
-        for (int i = 0; i < compareLength; ++i)
-        {
-            extractedSb.Append(extracted[i]);
-            expectedSb.Append(expected[i]);
-            if (extracted[i] != expected[i])
-            {
-                match = false;
-                mismatchCount++;
-                diffMarker.Append("^");
-            }
-            else
-            {
-                diffMarker.Append(" ");
-            }
-        }
-
-        int displayLength = Math.Min(compareLength, 120); // 콘솔 출력 길이 제한
-        Debug.Log($"추출된 비트 (처음 {displayLength}개): {extractedSb.ToString().Substring(0, displayLength)}{(compareLength > displayLength ? "..." : "")}");
-        Debug.Log($"예상 비트 (처음 {displayLength}개): {expectedSb.ToString().Substring(0, displayLength)}{(compareLength > displayLength ? "..." : "")}");
-
-        if (match)
-        {
-            Debug.Log($"<color=green>전체 {compareLength} 비트 일치!</color>");
-        }
-        else
-        {
-            Debug.LogError($"<color=red>비트 불일치! ({mismatchCount} / {compareLength} 비트 다름)</color>");
-            int markerLength = Math.Min(diffMarker.Length, 120);
-            Debug.Log($"불일치 위치: {diffMarker.ToString().Substring(0, markerLength)}{(diffMarker.Length > markerLength ? "..." : "")}");
-        }
-    }
-
-
-    // --- ★★★ 수정: 동기화 패턴 탐색 및 결과 처리 함수 ★★★ ---
-    private void SearchAndComparePattern(List<int> extractedBits)
-    {
-        if (extractedBits == null || extractedBits.Count < SYNC_PATTERN_LENGTH)
-        {
-            Debug.LogError($"동기화 패턴({SYNC_PATTERN_LENGTH}비트)을 찾기에 추출된 비트({extractedBits?.Count ?? 0}비트)가 부족합니다!");
-            return;
-        }
-
-        int foundIndex = -1; // 동기화 패턴 시작 인덱스 (-1: 못찾음)
-        // 탐색 범위: 추출된 비트열 내에서 동기화 패턴이 들어갈 수 있는 마지막 위치까지
-        int maxSearchStart = extractedBits.Count - SYNC_PATTERN_LENGTH;
-
-        Debug.Log($"동기화 패턴 탐색 시작 (최대 {maxSearchStart + 1} 위치 확인)...");
-        System.Diagnostics.Stopwatch searchStopwatch = System.Diagnostics.Stopwatch.StartNew();
-
-        // 순차적으로 비교하며 동기화 패턴 탐색
-        for (int i = 0; i <= maxSearchStart; ++i)
-        {
-            bool currentMatch = true;
-            for (int j = 0; j < SYNC_PATTERN_LENGTH; ++j)
-            {
-                // sync_pattern_cs (int 배열) 와 extractedBits (List<int>) 비교
-                if (i + j >= extractedBits.Count || j >= sync_pattern_cs.Length || // 범위 체크
-                    extractedBits[i + j] != sync_pattern_cs[j])
-                {
-                    currentMatch = false;
-                    break; // 하나라도 틀리면 다음 시작 위치(i+1)로 이동
-                }
-            }
-
-            if (currentMatch) // 패턴을 찾았으면
-            {
-                foundIndex = i; // 시작 인덱스 기록
-                Debug.Log($"동기화 패턴 탐색 성공! 시작 인덱스: {foundIndex}");
-                break; // 첫 번째 일치하는 패턴을 찾으면 탐색 종료
-            }
-        }
-        searchStopwatch.Stop();
-        Debug.Log($"동기화 패턴 탐색 완료 ({searchStopwatch.Elapsed.TotalMilliseconds:F2} ms 소요).");
-
-        // --- 결과 처리 ---
-        if (foundIndex != -1) // 동기화 패턴을 찾았을 경우
-        {
-            Debug.Log($"<color=lime>동기화 패턴 발견! (시작 인덱스: {foundIndex})</color>");
-
-            // 실제 페이로드 데이터 추출 (동기화 패턴 바로 다음부터)
-            int payloadStartIndex = foundIndex + SYNC_PATTERN_LENGTH;
-            int extractedPayloadLength = extractedBits.Count - payloadStartIndex;
-
-            if (extractedPayloadLength > 0)
-            {
-                // 예상 페이로드 생성 (동기화 패턴 제외)
-                List<uint> expectedPayload = new List<uint>();
-                List<uint> fullExpected = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
-                if (fullExpected != null && fullExpected.Count > SYNC_PATTERN_LENGTH)
-                {
-                    expectedPayload.AddRange(fullExpected.Skip(SYNC_PATTERN_LENGTH));
-                }
-
-                // 추출된 페이로드와 예상 페이로드 비교
-                int comparePayloadLength = Math.Min(extractedPayloadLength, expectedPayload.Count);
-                StringBuilder extractedPayloadSb = new StringBuilder();
-                StringBuilder expectedPayloadSb = new StringBuilder();
-                StringBuilder diffPayloadMarker = new StringBuilder();
-                int payloadMismatchCount = 0;
-                bool payloadMatch = true;
-
-                for (int i = 0; i < comparePayloadLength; ++i)
-                {
-                    int extractedBit = extractedBits[payloadStartIndex + i];
-                    uint expectedBit = (i < expectedPayload.Count) ? expectedPayload[i] : 9; // 예상 범위 벗어나면 9로 표시
-
-                    extractedPayloadSb.Append(extractedBit);
-                    expectedPayloadSb.Append(expectedBit);
-
-                    if (extractedBit != expectedBit)
-                    {
-                        payloadMatch = false;
-                        payloadMismatchCount++;
-                        diffPayloadMarker.Append("^");
-                    }
-                    else
-                    {
-                        diffPayloadMarker.Append(" ");
-                    }
-                }
-
-                int displayLength = Math.Min(comparePayloadLength, 120);
-                Debug.Log($"추출 페이로드 ({comparePayloadLength}비트): {extractedPayloadSb.ToString().Substring(0, displayLength)}{(comparePayloadLength > displayLength ? "..." : "")}");
-                Debug.Log($"예상 페이로드 ({comparePayloadLength}비트): {expectedPayloadSb.ToString().Substring(0, displayLength)}{(comparePayloadLength > displayLength ? "..." : "")}");
-
-                if (payloadMatch)
-                {
-                    Debug.Log($"<color=green>페이로드 {comparePayloadLength} 비트 일치!</color>");
-                }
-                else
-                {
-                    Debug.LogError($"<color=red>페이로드 불일치! ({payloadMismatchCount} / {comparePayloadLength} 비트 다름)</color>");
-                    int markerLength = Math.Min(diffPayloadMarker.Length, 120);
-                    Debug.Log($"불일치 위치: {diffPayloadMarker.ToString().Substring(0, markerLength)}{(diffPayloadMarker.Length > markerLength ? "..." : "")}");
-                }
-
-                // TODO: 추출된 페이로드(payload)를 실제 데이터로 변환하거나 사용하는 로직 추가
-            }
-            else
-            {
-                Debug.LogWarning("동기화 패턴 이후에 추출된 페이로드 데이터가 없습니다.");
-            }
-        }
-        else // 동기화 패턴 못찾음
-        {
-            Debug.LogError("<color=orange>동기화 패턴을 찾지 못했습니다!</color> 추출된 비트 오류율이 높거나 데이터 시작점이 다를 수 있습니다.");
-            // 실패 시 첫 부분 비교 결과라도 보여주기
-            CompareFirstBits(extractedBits);
-        }
-    }
-
-    // 비교 함수 (동기화 실패 시 첫 부분 비교용 - 이전 CompareAndLogSyncPattern과 유사)
-    private void CompareFirstBits(List<int> extracted)
-    { /* ... 이전 답변과 동일 (expectedSyncPatternString 사용) ... */
-        int compareLength = Math.Min(extracted.Count, SYNC_PATTERN_LENGTH);
-        if (compareLength == 0) return;
-        Debug.LogWarning($"동기화 실패. 첫 {compareLength} 비트만 예상 패턴과 비교합니다.");
-
-        StringBuilder extractedSb = new StringBuilder(compareLength);
-        StringBuilder expectedSb = new StringBuilder(compareLength);
-        StringBuilder diffMarker = new StringBuilder(compareLength);
-        int mismatchCount = 0;
-        for (int i = 0; i < compareLength; ++i)
-        {
-            extractedSb.Append(extracted[i]);
-            expectedSb.Append(expectedSyncPatternString[i]); // 미리 생성된 문자열 사용
-            if (extracted[i] != sync_pattern_cs[i]) { mismatchCount++; diffMarker.Append("^"); }
-            else { diffMarker.Append(" "); }
-        }
-        int displayLength = Math.Min(compareLength, 2000);
-        Debug.Log($"추출된 비트 (처음 {displayLength}개): {extractedSb.ToString().Substring(0, displayLength)}{(compareLength > displayLength ? "..." : "")}");
-        Debug.Log($"예상 패턴 (처음 {displayLength}개): {expectedSb.ToString().Substring(0, displayLength)}{(compareLength > displayLength ? "..." : "")}");
-        Debug.LogError($"<color=red>첫 {compareLength} 비트 비교 결과: {mismatchCount} 비트 불일치.</color>");
-        int markerLength = Math.Min(diffMarker.Length, 2000);
-        Debug.Log($"불일치 위치: {diffMarker.ToString().Substring(0, markerLength)}{(diffMarker.Length > markerLength ? "..." : "")}");
     }
 
     /// <summary>
@@ -533,6 +423,13 @@ public class RealtimeExtractorDebug : MonoBehaviour
             {
                 if (extractedBits[i + j] != syncPattern[j])
                 {
+                    //// <<< 추가된 디버그 로그 >>>
+                    //// 첫 불일치 발생 시 로그 출력
+                    //if (isSyncMatch) // 해당 시작 위치(i)에서 첫 불일치일 때만 로그 출력 (선택적)
+                    //{
+                    //    Debug.LogWarning($"Sync Mismatch at search index i={i}: Pattern index j={j}, Extracted bit={extractedBits[i + j]}, Expected sync bit={syncPattern[j]}");
+                    //}
+
                     isSyncMatch = false; // 하나라도 다르면 불일치
                     break; // 내부 루프 탈출
                 }
@@ -606,6 +503,79 @@ public class RealtimeExtractorDebug : MonoBehaviour
         searchStopwatch.Stop();
         Debug.LogError($"<color=orange>추출된 비트열 전체에서 유효한 동기화 패턴 + 페이로드를 찾지 못했습니다.</color> (탐색 시간: {searchStopwatch.Elapsed.TotalMilliseconds:F2} ms)");
         return -1; // 최종 실패
+    }
+
+    // 패턴 버퍼 생성 헬퍼
+    private float[] GeneratePatternBuffer(int totalBlocks, int coeffsPerBlock, string seedKey)
+    {
+        float[] buffer = new float[totalBlocks * coeffsPerBlock];
+        System.Random prng = new System.Random(seedKey.GetHashCode());
+        for (int i = 0; i < buffer.Length; ++i) buffer[i] = (prng.NextDouble() < 0.5) ? -1f : 1f;
+
+        // --- 여기서 패턴 버퍼 내용을 로그로 출력 ---
+        int logLength = Math.Min(buffer.Length, 64); // 최소 64개, 배열 크기보다 작으면 배열 크기만큼만
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
+        for (int i = 0; i < logLength; ++i)
+        {
+            sb.Append(buffer[i].ToString("F1")); // 소수점 첫째 자리까지 표시 (예: 1.0, -1.0)
+            if (i < logLength - 1)
+            {
+                sb.Append(", ");
+            }
+        }
+        Debug.Log($"RealtimeExtractorDebug: 생성된 패턴 버퍼 (처음 {logLength}개): [{sb.ToString()}]");
+        // --- 로그 출력 끝 ---
+
+        return buffer;
+    }
+
+    // 지그재그 인덱스 반환 헬퍼 (DCT용)
+    private Vector2Int[] GetZigZagIndices()
+    {
+        return new Vector2Int[] { /* ... 이전과 동일 ... */
+                new Vector2Int(0, 1), new Vector2Int(1, 0), new Vector2Int(2, 0), new Vector2Int(1, 1), new Vector2Int(0, 2), new Vector2Int(0, 3), new Vector2Int(1, 2), new Vector2Int(2, 1),
+                new Vector2Int(3, 0), new Vector2Int(4, 0), new Vector2Int(3, 1), new Vector2Int(2, 2), new Vector2Int(1, 3), new Vector2Int(0, 4), new Vector2Int(0, 5), new Vector2Int(1, 4),
+                new Vector2Int(2, 3), new Vector2Int(3, 2), new Vector2Int(4, 1), new Vector2Int(5, 0), new Vector2Int(6, 0), new Vector2Int(5, 1), new Vector2Int(4, 2), new Vector2Int(3, 3),
+                new Vector2Int(2, 4), new Vector2Int(1, 5), new Vector2Int(0, 6), new Vector2Int(0, 7), new Vector2Int(1, 6), new Vector2Int(2, 5), new Vector2Int(3, 4), new Vector2Int(4, 3),
+                new Vector2Int(5, 2), new Vector2Int(6, 1), new Vector2Int(7, 0), new Vector2Int(7, 1), new Vector2Int(6, 2), new Vector2Int(5, 3), new Vector2Int(4, 4), new Vector2Int(3, 5),
+                new Vector2Int(2, 6), new Vector2Int(1, 7), new Vector2Int(2, 7), new Vector2Int(3, 6), new Vector2Int(4, 5), new Vector2Int(5, 4), new Vector2Int(6, 3), new Vector2Int(7, 2),
+                new Vector2Int(7, 3), new Vector2Int(6, 4), new Vector2Int(5, 5), new Vector2Int(4, 6), new Vector2Int(3, 7), new Vector2Int(4, 7), new Vector2Int(5, 6), new Vector2Int(6, 5),
+                new Vector2Int(7, 4), new Vector2Int(7, 5), new Vector2Int(6, 6), new Vector2Int(5, 7), new Vector2Int(6, 7), new Vector2Int(7, 6), new Vector2Int(7, 7)
+        };
+    }
+
+    // 블록 데이터 추출 헬퍼 (float 데이터용)
+    private void ExtractBlockData(NativeArray<float> pixelData, int width, int height, int blockIdx, int numBlocksX, float[,] blockR, float[,] blockG, float[,] blockB)
+    {
+        int blockY = blockIdx / numBlocksX;
+        int blockX = blockIdx % numBlocksX;
+
+        for (int y = 0; y < BLOCK_SIZE; ++y)
+        {
+            for (int x = 0; x < BLOCK_SIZE; ++x)
+            {
+                int pixelX = blockX * BLOCK_SIZE + x;
+                int pixelY = blockY * BLOCK_SIZE + y;
+                if (pixelX < width && pixelY < height)
+                {
+                    int dataIndex = (pixelY * width + pixelX) * 4; // RGBA 순서 가정
+                    if (dataIndex + 2 < pixelData.Length)
+                    {
+                        blockR[y, x] = pixelData[dataIndex];
+                        blockG[y, x] = pixelData[dataIndex + 1];
+                        blockB[y, x] = pixelData[dataIndex + 2];
+                    }
+                    else
+                    {
+                        blockR[y, x] = 0f; blockG[y, x] = 0f; blockB[y, x] = 0f;
+                    }
+                }
+                else
+                {
+                    blockR[y, x] = 0f; blockG[y, x] = 0f; blockB[y, x] = 0f;
+                }
+            }
+        }
     }
 
 
@@ -683,8 +653,60 @@ public class RealtimeExtractorDebug : MonoBehaviour
         }
     }
 
+    // ★★★ CPU 1D Haar DWT ★★★
+    // HLSL의 Haar_DWT_1D_InPlace를 C#으로 구현 (double 사용)
+    private void Haar_DWT_1D_CPU(double[] data)
+    {
+        if (data.Length != BLOCK_SIZE) return;
+        double[] temp = new double[BLOCK_SIZE];
+
+        for (int i = 0; i < HALF_BLOCK_SIZE; ++i)
+        {
+            double a = data[2 * i];
+            double b = data[2 * i + 1];
+            temp[i] = (a + b) * HAAR_SCALE; // Approx
+            temp[i + HALF_BLOCK_SIZE] = (a - b) * HAAR_SCALE; // Detail
+        }
+        Array.Copy(temp, data, BLOCK_SIZE); // 결과 덮어쓰기
+    }
+
+    // ★★★ CPU 2D Haar DWT ★★★
+    private void Haar_DWT_2D_CPU(float[,] blockData, double[,] dwtCoeffs)
+    {
+        int rows = blockData.GetLength(0);
+        int cols = blockData.GetLength(1);
+        if (rows != BLOCK_SIZE || cols != BLOCK_SIZE) return;
+
+        // double[,] 임시 버퍼 생성 및 복사
+        double[,] tempBuffer = new double[BLOCK_SIZE, BLOCK_SIZE];
+        for (int i = 0; i < BLOCK_SIZE; ++i)
+            for (int j = 0; j < BLOCK_SIZE; ++j)
+                tempBuffer[i, j] = (double)blockData[i, j];
+
+        double[] rowColData = new double[BLOCK_SIZE]; // 1D 변환용 임시 배열
+
+        // 1. 행(Row) 변환
+        for (int i = 0; i < BLOCK_SIZE; ++i)
+        {
+            // 현재 행을 rowColData로 복사
+            for (int j = 0; j < BLOCK_SIZE; ++j) rowColData[j] = tempBuffer[i, j];
+            // 1D DWT 수행 (in-place)
+            Haar_DWT_1D_CPU(rowColData);
+            // 결과를 다시 tempBuffer 행에 저장
+            for (int j = 0; j < BLOCK_SIZE; ++j) tempBuffer[i, j] = rowColData[j];
+        }
+
+        // 2. 열(Column) 변환
+        for (int j = 0; j < BLOCK_SIZE; ++j)
+        {
+            // 현재 열을 rowColData로 복사
+            for (int i = 0; i < BLOCK_SIZE; ++i) rowColData[i] = tempBuffer[i, j];
+            // 1D DWT 수행 (in-place)
+            Haar_DWT_1D_CPU(rowColData);
+            // 최종 결과를 출력 dwtCoeffs 열에 저장
+            for (int i = 0; i < BLOCK_SIZE; ++i) dwtCoeffs[i, j] = rowColData[i];
+        }
+    }
 
 
-
-    // 클래스 종료
 }

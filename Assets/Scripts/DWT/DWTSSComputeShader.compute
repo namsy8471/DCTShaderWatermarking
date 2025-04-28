@@ -210,9 +210,99 @@ void DWT_Pass2_Cols_EmbedSS(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_G
                 }
             }
         }
-        // 다른 부대역에 적용하려면 조건 수정
+        
+        //// 임베딩 대상 부대역 결정 (HL - High-Low)
+        //if (u_local >= HALF_BLOCK_SIZE && v_local < HALF_BLOCK_SIZE) // <<< 조건 변경
+        //{
+        //    uint u_hl = u_local - HALF_BLOCK_SIZE; // HL 내 로컬 x 좌표 (0~3)
+        //    uint v_hl = v_local; // HL 내 로컬 y 좌표 (0~3)
+        //    uint i_in_hl = v_hl * HALF_BLOCK_SIZE + u_hl; // HL 내 선형 인덱스
+
+        //    if (i_in_hl < CoefficientsToUse) // 사용할 계수 개수 체크
+        //    {
+        //// --- 나머지 임베딩 로직은 거의 동일 ---
+        //        uint numBlocksX = (Width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        //        uint blockLinearIndex = groupID.y * numBlocksX + groupID.x;
+
+        //        if (blockLinearIndex < BitLength)
+        //        {
+        //            uint bit = Bitstream[blockLinearIndex];
+        //            float bit_sign = (bit == 1) ? 1.0f : -1.0f;
+        //            uint pattern_base_idx = blockLinearIndex * CoefficientsToUse;
+        //            uint pattern_idx = pattern_base_idx + i_in_hl; // <<< 인덱스 변수명 변경 (i_in_hl 사용)
+
+        //            float pattern_value = PatternBuffer[pattern_idx];
+        //            float modification = EmbeddingStrength * pattern_value * bit_sign;
+
+        //    // 현재 스레드가 계산한 DWT 계수에 modification 적용
+        //            finalDwtCoeffRGB += float3(modification, modification, modification);
+        //        }
+        //    }
+        //}
+        //// --- 임베딩 끝 ---
+        
+        //// 임베딩 대상 부대역 결정 (LH - Low-High)
+        //if (u_local < HALF_BLOCK_SIZE && v_local >= HALF_BLOCK_SIZE) // <<< 조건 변경
+        //{
+        //    uint u_lh = u_local; // LH 내 로컬 x 좌표 (0~3)
+        //    uint v_lh = v_local - HALF_BLOCK_SIZE; // LH 내 로컬 y 좌표 (0~3)
+        //    uint i_in_lh = v_lh * HALF_BLOCK_SIZE + u_lh; // LH 내 선형 인덱스
+
+        //    if (i_in_lh < CoefficientsToUse) // 사용할 계수 개수 체크
+        //    {
+        //// --- 나머지 임베딩 로직은 거의 동일 ---
+        //        uint numBlocksX = (Width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        //        uint blockLinearIndex = groupID.y * numBlocksX + groupID.x;
+
+        //        if (blockLinearIndex < BitLength)
+        //        {
+        //            uint bit = Bitstream[blockLinearIndex];
+        //            float bit_sign = (bit == 1) ? 1.0f : -1.0f;
+        //            uint pattern_base_idx = blockLinearIndex * CoefficientsToUse;
+        //            uint pattern_idx = pattern_base_idx + i_in_lh; // <<< 인덱스 변수명 변경 (i_in_lh 사용)
+
+        //            float pattern_value = PatternBuffer[pattern_idx];
+        //            float modification = EmbeddingStrength * pattern_value * bit_sign;
+
+        //            finalDwtCoeffRGB += float3(modification, modification, modification);
+        //        }
+        //    }
+        //}
+        //// --- 임베딩 끝 ---
+        //// 다른 부대역에 적용하려면 조건 수정
+        
+        //// 임베딩 대상 부대역 결정 (LL - Low-Low)
+        //// ★★★ 주의: LL 부대역 수정은 이미지 품질에 큰 영향을 미칩니다! ★★★
+        //if (u_local < HALF_BLOCK_SIZE && v_local < HALF_BLOCK_SIZE) // <<< 조건 변경
+        //{
+        //    uint u_ll = u_local; // LL 내 로컬 x 좌표 (0~3)
+        //    uint v_ll = v_local; // LL 내 로컬 y 좌표 (0~3)
+        //    uint i_in_ll = v_ll * HALF_BLOCK_SIZE + u_ll; // LL 내 선형 인덱스
+
+        //    if (i_in_ll < CoefficientsToUse) // 사용할 계수 개수 체크
+        //    {
+        //// --- 나머지 임베딩 로직은 거의 동일 ---
+        //        uint numBlocksX = (Width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        //        uint blockLinearIndex = groupID.y * numBlocksX + groupID.x;
+
+        //        if (blockLinearIndex < BitLength)
+        //        {
+        //            uint bit = Bitstream[blockLinearIndex];
+        //            float bit_sign = (bit == 1) ? 1.0f : -1.0f;
+        //            uint pattern_base_idx = blockLinearIndex * CoefficientsToUse;
+        //            uint pattern_idx = pattern_base_idx + i_in_ll; // <<< 인덱스 변수명 변경 (i_in_ll 사용)
+
+        //            float pattern_value = PatternBuffer[pattern_idx];
+        //            float modification = EmbeddingStrength * pattern_value * bit_sign;
+
+        //            finalDwtCoeffRGB += float3(modification, modification, modification);
+        //        }
+        //    }
+        //}
     }
     // --- 임베딩 끝 ---
+    
+    
 
     // 3. 최종 RGB DWT 계수(수정되었을 수도 있음)를 DWTOutputRGB 텍스처에 쓰기
     uint writeX_global = blockX + threadX;
@@ -307,8 +397,7 @@ void IDWT_Pass2_Rows(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_GroupID,
     float finalPixelValueR = rowDataR[threadX];
     float finalPixelValueG = rowDataG[threadX];
     float finalPixelValueB = rowDataB[threadX];
-
-    // 3. CbCr 로드 및 결합 삭제, RGB 변환 함수 호출 삭제
+    
     float3 finalRGB = float3(finalPixelValueR, finalPixelValueG, finalPixelValueB);
 
     // 4. 최종 RGB 픽셀 값을 IDWTOutput 텍스처에 쓰기 (saturate 적용)
