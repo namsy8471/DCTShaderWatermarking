@@ -46,7 +46,6 @@ static const uint2 ZigZagIndices[63] =
 };
 
 // --- 1D DCT 함수 (Type-II) ---
-// ★★★ 이 함수의 정확성이 여전히 중요! ★★★
 void DCT_1D_Single(float inputData[BLOCK_SIZE], out float outputData, uint k_idx)
 {
     float k = (float) k_idx;
@@ -62,7 +61,6 @@ void DCT_1D_Single(float inputData[BLOCK_SIZE], out float outputData, uint k_idx
 }
 
 // --- 1D IDCT 함수 (Type-II) ---
-// ★★★ 이 함수의 정확성이 여전히 중요! ★★★
 void IDCT_1D_Single(float inputData[BLOCK_SIZE], out float outputData, uint n_idx)
 {
     float n = (float) n_idx;
@@ -163,23 +161,8 @@ void DCT_Pass2_Cols_EmbedSS_RGB(uint3 id : SV_DispatchThreadID, uint3 groupID : 
     uint threadX = groupThreadID.x; // 열 (x)
     uint threadY = groupThreadID.y; // 행 (y)
 
-    //// 1. 열 방향 DCT 수행 (SharedBlock 없이)
-    //float3 colPixels[BLOCK_SIZE];
-    //for (uint i = 0; i < BLOCK_SIZE; ++i)
-    //{
-    //    uint loadX = blockOriginX + threadU;
-    //    uint loadY = blockOriginY + i;
-    //    if (loadX < Width && loadY < Height)
-    //    {
-    //        colPixels[i] = IntermediateBufferRGB.Load(int3(loadX, loadY, 0));
-    //    }
-    //    else
-    //    {
-    //        colPixels[i] = float3(0, 0, 0);
-    //    }
-    //}
-    
-    // 1. 전역 메모리(IntermediateBufferRGB) -> 공유 메모리 로드 (열 기준)
+    // 1. 열 방향 DCT 수행
+    // 전역 메모리(IntermediateBufferRGB) -> 공유 메모리 로드 (열 기준)
     uint loadX = blockOriginX + threadX;
     uint loadY = blockOriginY + threadY;
     float3 loadedRGB = float3(0, 0, 0);
@@ -191,14 +174,6 @@ void DCT_Pass2_Cols_EmbedSS_RGB(uint3 id : SV_DispatchThreadID, uint3 groupID : 
 
     // 2. 동기화
     GroupMemoryBarrierWithGroupSync();
-
-    //float colR[BLOCK_SIZE], colG[BLOCK_SIZE], colB[BLOCK_SIZE];
-    //for (uint i = 0; i < BLOCK_SIZE; ++i)
-    //{
-    //    colR[i] = colPixels[i].r;
-    //    colG[i] = colPixels[i].g;
-    //    colB[i] = colPixels[i].b;
-    //}
     
     // 3. 공유 메모리 -> 로컬 배열 로드 (열 기준) 및 고속 1D DCT 수행
     // 각 스레드는 자신이 담당할 열(column 'threadX') 전체 데이터를 공유 메모리에서 읽어옴
@@ -217,71 +192,90 @@ void DCT_Pass2_Cols_EmbedSS_RGB(uint3 id : SV_DispatchThreadID, uint3 groupID : 
 
     float3 dctResult = float3(dctResultColR, dctResultColG, dctResultColB);
 
-    GroupMemoryBarrierWithGroupSync(); // 모든 스레드가 dctResult 계산 완료 대기
+    //GroupMemoryBarrierWithGroupSync(); // 모든 스레드가 dctResult 계산 완료 대기
     
-    // 2. Spread Spectrum 임베딩 (옵션)
-    if (Embed == 1)
+    // 4. Spread Spectrum 임베딩 (옵션)
+    //if (Embed == 1)
+    //{
+    //    uint numBlocksX = (Width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    //    uint blockLinearIndex = groupID.y * numBlocksX + groupID.x;
+
+    //    if (blockLinearIndex < BitLength)
+    //    {
+    //        uint bit = Bitstream[blockLinearIndex];
+    //        float bit_sign = (bit == 1) ? 1.0f : -1.0f;
+    //        uint pattern_base_idx = blockLinearIndex * CoefficientsToUse;
+
+    //        if (threadX == 0 && threadY == 0) // 하나의 스레드에서만 임베딩 수행
+    //        {
+    //            for (uint i = 0; i < CoefficientsToUse; ++i)
+    //            {
+    //                if (i < 63)
+    //                {
+    //                    uint pattern_idx = pattern_base_idx + i;
+    //                    uint2 embedUV = ZigZagIndices[i];
+    //                    uint u = blockOriginX + embedUV.x;
+    //                    uint v = blockOriginY + embedUV.y;
+
+    //                    if (u < Width && v < Height)
+    //                    {
+    //                        float pattern_value = PatternBuffer[pattern_idx];
+    //                        float modification = EmbeddingStrength * pattern_value * bit_sign;
+
+    //                        float3 coeff = DCTOutputRGB[uint2(u, v)];
+    //                        coeff += float3(modification, modification, modification);
+    //                        DCTOutputRGB[uint2(u, v)] = coeff;
+    //                    }
+    //                }
+    //            }
+    //        }
+    //    }
+    //}
+    // <<< 수정된 워터마킹 로직 시작 >>>
+    // 모든 스레드가 자신의 dctResult를 계산한 후에 워터마킹 적용 여부 검사
+    float3 finalCoefficientToWrite = dctResult; // 기본값은 계산된 DCT 계수
+    
+    if (Embed == 1 && CoefficientsToUse > 0)
     {
         uint numBlocksX = (Width + BLOCK_SIZE - 1) / BLOCK_SIZE;
         uint blockLinearIndex = groupID.y * numBlocksX + groupID.x;
 
+        // 현재 블록이 비트를 임베딩해야 하는지 확인
         if (blockLinearIndex < BitLength)
         {
-            uint bit = Bitstream[blockLinearIndex];
-            float bit_sign = (bit == 1) ? 1.0f : -1.0f;
-            uint pattern_base_idx = blockLinearIndex * CoefficientsToUse;
-
-            if (threadX == 0 && threadY == 0) // 하나의 스레드에서만 임베딩 수행
+            // 현재 스레드의 로컬 좌표 (threadX, threadY)가
+            // ZigZag 순서상 i < CoefficientsToUse 에 해당하는지 확인
+            for (uint i = 0; i < CoefficientsToUse; ++i)
             {
-                for (uint i = 0; i < CoefficientsToUse; ++i)
+                if (i < 63) // ZigZagIndices 범위 체크
                 {
-                    if (i < 63)
+                    uint2 targetUV = ZigZagIndices[i];
+                    if (threadX == targetUV.x && threadY == targetUV.y) // 현재 스레드가 타겟 계수 담당인가?
                     {
+                        // 이 스레드가 워터마크를 적용해야 함
+                        uint bit = Bitstream[blockLinearIndex];
+                        float bit_sign = (bit == 1) ? 1.0f : -1.0f;
+                        uint pattern_base_idx = blockLinearIndex * CoefficientsToUse;
                         uint pattern_idx = pattern_base_idx + i;
-                        uint2 embedUV = ZigZagIndices[i];
-                        uint u = blockOriginX + embedUV.x;
-                        uint v = blockOriginY + embedUV.y;
 
-                        if (u < Width && v < Height)
-                        {
-                            float pattern_value = PatternBuffer[pattern_idx];
-                            float modification = EmbeddingStrength * pattern_value * bit_sign;
+                        // PatternBuffer 범위 체크 필요 (C# 코드에서 버퍼 크기 보장 필요)
+                        // if (pattern_idx < PatternBuffer_Size) { ... }
 
-                            float3 coeff = DCTOutputRGB[uint2(u, v)];
-                            coeff += float3(modification, modification, modification);
-                            DCTOutputRGB[uint2(u, v)] = coeff;
-                        }
+                        float pattern_value = PatternBuffer[pattern_idx];
+                        float modification = EmbeddingStrength * pattern_value * bit_sign;
+
+                        // 자신의 로컬 dctResult 값을 수정
+                        finalCoefficientToWrite += float3(modification, modification, modification);
+
+                        break; // 자신의 위치를 찾아서 수정했으면 루프 종료
                     }
                 }
             }
         }
     }
-
-    // 임베딩이 완료될 때까지 모든 스레드 대기 (thread 0,0만 작업했으므로 필요)
-    GroupMemoryBarrierWithGroupSync();
+    // <<< 수정된 워터마킹 로직 끝 >>>
     
-    // 4. 최종 결과(임베딩 적용되었을 수 있는)를 DCTOutputRGB 텍스처에 쓰기
-    // (주의: 위 임베딩 로직이 DCTOutputRGB를 직접 수정했다면, 여기서는 임베딩 안 된 dctResult를 그냥 쓰면 안됨.
-    //        임베딩 로직 수정이 필요함. 가장 간단하게는 임베딩을 포기하거나,
-    //        각 스레드가 자신의 최종 dctResult를 수정하는 로직으로 바꿔야 함.
-    //        일단 여기서는 임베딩이 없다고 가정하고 dctResult를 쓴다고 가정함.
-    //        -> 임베딩 로직을 각 스레드가 자신의 값만 수정하도록 변경하는 것이 좋음)
-
-    // --- 임베딩 로직 수정 제안 (각 스레드가 자신의 계수만 수정) ---
-    float3 finalCoefficientToWrite = dctResult; // 기본값은 계산된 DCT 계수
-    if (Embed == 1 && CoefficientsToUse > 0)
-    {
-        // 현재 스레드 (threadX, threadY)가 임베딩 대상 계수인지 확인
-        // (이 방식은 ZigZag 순서가 아닌, 각 스레드가 자신의 (u,v) 계수 담당)
-        // 또는, 자신이 수정해야 할 ZigZag 인덱스인지 확인하고 수정
-        // -> 이 부분은 Spread Spectrum 구현 방식에 따라 크게 달라짐.
-        //    기존 코드는 thread(0,0)이 다른 위치를 수정해서 복잡/위험.
-        //    여기서는 임베딩 부분을 일단 제외하고 DCT 결과만 쓰는 것으로 가정.
-    }
-     // --- 임베딩 로직 수정 제안 끝 ---
-
-    
-    // 3. 결과 쓰기
+    // 5. 결과 쓰기
     uint writeX = blockOriginX + threadX;
     uint writeY = blockOriginY + threadY;
     if (writeX < Width && writeY < Height)
@@ -305,23 +299,8 @@ void IDCT_Pass1_Cols_RGB(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_Grou
     uint threadX = groupThreadID.x;
     uint threadY = groupThreadID.y;
 
-    //// 1. DCT 계수 읽기 (col 방향)
-    //float3 colCoeffs[BLOCK_SIZE];
-    //for (uint i = 0; i < BLOCK_SIZE; ++i)
-    //{
-    //    uint loadX = blockOriginX + threadU;
-    //    uint loadY = blockOriginY + i;
-    //    if (loadX < Width && loadY < Height)
-    //    {
-    //        colCoeffs[i] = DCTOutputRGB.Load(int3(loadX, loadY, 0));
-    //    }
-    //    else
-    //    {
-    //        colCoeffs[i] = float3(0, 0, 0);
-    //    }
-    //}
-    
-    // 1. 전역 메모리(DCTOutputRGB) -> 공유 메모리 로드 (열 기준)
+    //1. DCT 계수 읽기 (col 방향)
+    // 전역 메모리(DCTOutputRGB) -> 공유 메모리 로드 (열 기준)
     uint loadX = blockOriginX + threadX;
     uint loadY = blockOriginY + threadY;
     float3 loadedCoeffRGB = float3(0, 0, 0);
@@ -333,14 +312,6 @@ void IDCT_Pass1_Cols_RGB(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_Grou
 
     // 2. 동기화
     GroupMemoryBarrierWithGroupSync();
-
-    //float colR[BLOCK_SIZE], colG[BLOCK_SIZE], colB[BLOCK_SIZE];
-    //for (uint i = 0; i < BLOCK_SIZE; ++i)
-    //{
-    //    colR[i] = colCoeffs[i].r;
-    //    colG[i] = colCoeffs[i].g;
-    //    colB[i] = colCoeffs[i].b;
-    //}
 
     // 3. 공유 메모리 -> 로컬 배열 로드 (열 기준) 및 고속 1D IDCT 수행
     float colDataR[BLOCK_SIZE], colDataG[BLOCK_SIZE], colDataB[BLOCK_SIZE];
@@ -379,31 +350,7 @@ void IDCT_Pass2_Rows_RGB(uint3 id : SV_DispatchThreadID, uint3 groupID : SV_Grou
     uint threadX = groupThreadID.x;
     uint threadY = groupThreadID.y;
 
-    //// 1. Intermediate RGB (행 방향)
-    //float3 rowPixels[BLOCK_SIZE];
-    //for (uint i = 0; i < BLOCK_SIZE; ++i)
-    //{
-    //    uint loadX = blockOriginX + i;
-    //    uint loadY = blockOriginY + threadY;
-    //    if (loadX < Width && loadY < Height)
-    //    {
-    //        rowPixels[i] = IntermediateBufferRGB.Load(int3(loadX, loadY, 0));
-    //    }
-    //    else
-    //    {
-    //        rowPixels[i] = float3(0, 0, 0);
-    //    }
-    //}
-
-    //float rowR[BLOCK_SIZE], rowG[BLOCK_SIZE], rowB[BLOCK_SIZE];
-    
-    //for (uint j = 0; j < BLOCK_SIZE; ++j)
-    //{
-    //    rowR[j] = rowPixels[j].r;
-    //    rowG[j] = rowPixels[j].g;
-    //    rowB[j] = rowPixels[j].b;
-    //}
-
+    // 1. Intermediate RGB (행 방향)
     // 1. 전역 메모리(IntermediateBufferRGB) -> 공유 메모리 로드 (행 기준)
     uint loadX = blockOriginX + threadX;
     uint loadY = blockOriginY + threadY;

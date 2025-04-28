@@ -146,6 +146,8 @@ public class ScreenshotSaver : MonoBehaviour
 
         // --- 모든 저장 작업을 시도하고, 임시 Texture2D는 finally에서 정리 ---
         Texture2D texFloat = null; // EXR, PNG 저장에 사용될 임시 텍스처
+        Texture2D texSrgbForPNG = null; // PNG 저장용 (sRGB)
+
         bool rawSaved = false;
         bool exrSaved = false;
         bool pngSaved = false;
@@ -207,23 +209,47 @@ public class ScreenshotSaver : MonoBehaviour
             // --- 3. PNG (.png) 저장 (SDR/8bit 변환, 정보 손실 가능성 있음) ---
             try
             {
-                // EXR 저장을 위해 생성했던 texFloat 재사용
-                if (texFloat != null)
-                {
-                    // PNG로 인코딩 (내부적으로 RGBA32로 변환되며 [0,1] 범위 클램핑 및 양자화 발생)
-                    byte[] pngBytes = texFloat.EncodeToPNG();
+                // PNG 저장을 위한 sRGB Texture2D 생성 (RGBA32 포맷, linear=false)
+                texSrgbForPNG = new Texture2D(width, height, TextureFormat.RGBA32, false, false); // linear=false -> sRGB
 
-                    string pngFileName = baseFileName + ".png";
-                    string pngSavePath = Path.Combine(saveDirectory, pngFileName);
-
-                    File.WriteAllBytes(pngSavePath, pngBytes);
-                    Debug.Log($"<color=lime>PNG image saved successfully:</color> {pngSavePath} (Note: HDR data clamped/quantized)");
-                    pngSaved = true;
-                }
-                else
+                // NativeArray<float> (Linear) -> NativeArray<byte> (sRGB) 변환
+                // GetRawData는 메모리 복사 없이 접근하지만, 직접 변환은 여전히 필요.
+                // 더 효율적인 방법도 있겠지만, 간단한 수동 변환 예시:
+                var processedPixelData = new NativeArray<byte>(width * height * 4, Allocator.Temp);
+                for (int i = 0; i < width * height; ++i)
                 {
-                    Debug.LogWarning("Cannot save PNG because temporary texture (texFloat) was not created (EXR save might have failed).");
+                    // Linear float 값 읽기
+                    float r_lin = floatData[i * 4 + 0];
+                    float g_lin = floatData[i * 4 + 1];
+                    float b_lin = floatData[i * 4 + 2];
+                    float a_lin = floatData[i * 4 + 3]; // 알파값은 보통 그대로 사용
+
+                    // Linear -> sRGB 변환 (감마 보정)
+                    float r_srgb = Mathf.Pow(r_lin, 1.0f / 2.2f);
+                    float g_srgb = Mathf.Pow(g_lin, 1.0f / 2.2f);
+                    float b_srgb = Mathf.Pow(b_lin, 1.0f / 2.2f);
+
+                    // [0, 1] 범위를 [0, 255] byte 범위로 변환 및 클램핑
+                    processedPixelData[i * 4 + 0] = (byte)(Mathf.Clamp01(r_srgb) * 255);
+                    processedPixelData[i * 4 + 1] = (byte)(Mathf.Clamp01(g_srgb) * 255);
+                    processedPixelData[i * 4 + 2] = (byte)(Mathf.Clamp01(b_srgb) * 255);
+                    processedPixelData[i * 4 + 3] = (byte)(Mathf.Clamp01(a_lin) * 255);
                 }
+
+                // 변환된 byte 데이터를 sRGB Texture2D에 로드
+                texSrgbForPNG.SetPixelData(processedPixelData, 0);
+                texSrgbForPNG.Apply(false); // 밉맵 없이 Apply
+
+                // PNG로 인코딩 (내부적으로 RGBA32로 변환되며 [0,1] 범위 클램핑 및 양자화 발생)
+                byte[] pngBytes = texSrgbForPNG.EncodeToPNG();
+
+                string pngFileName = baseFileName + ".png";
+                string pngSavePath = Path.Combine(saveDirectory, pngFileName);
+
+                File.WriteAllBytes(pngSavePath, pngBytes);
+                Debug.Log($"<color=lime>PNG image saved successfully:</color> {pngSavePath} (Note: HDR data clamped/quantized)");
+                pngSaved = true;
+                
             }
             catch (Exception e)
             {
@@ -239,6 +265,12 @@ public class ScreenshotSaver : MonoBehaviour
                 if (Application.isEditor) DestroyImmediate(texFloat);
                 else Destroy(texFloat);
                 texFloat = null; // 참조 제거
+            }
+
+            if (texSrgbForPNG != null) // PNG용 텍스처도 파괴
+            {
+                if (Application.isEditor) DestroyImmediate(texSrgbForPNG); else Destroy(texSrgbForPNG);
+                texSrgbForPNG = null;
             }
 
             // --- 중요: Readback 처리 완료 알림 및 플래그 리셋 ---
@@ -294,6 +326,7 @@ public class ScreenshotSaver : MonoBehaviour
 
         // --- 모든 저장 작업을 시도하고, 임시 Texture2D는 finally에서 정리 ---
         Texture2D texFloat = null; // EXR, PNG 저장에 사용될 임시 텍스처
+
         bool rawSaved = false;
         bool exrSaved = false;
         bool pngSaved = false;

@@ -5,14 +5,7 @@ using UnityEngine.Rendering.Universal;
 using System.Collections.Generic;
 using System.Linq;
 using System;
-using Unity.Collections;
-using System.IO;
-using System.Net.NetworkInformation;
 
-// OriginBlock 클래스가 동일 프로젝트 내에 정의되어 있다고 가정
-// DataManager 클래스가 동일 프로젝트 내에 정의되어 있다고 가정
-// SaveTrigger 클래스가 동일 프로젝트 내에 정의되어 있다고 가정
-// RTResultHolder 클래스가 동일 프로젝트 내에 정의되어 있다고 가정
 
 public class DWTRenderFeature_SS : ScriptableRendererFeature
 {
@@ -199,7 +192,7 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
                     patternBuffer = new ComputeBuffer(count, sizeof(float), ComputeBufferType.Structured);
                     // Debug.Log($"[DWTRenderPass] Pattern ComputeBuffer 생성됨 (Count: {count})");
                 }
-                catch (Exception ex) { /* ... 에러 처리 ... */ return; }
+                catch (Exception) { /* ... 에러 처리 ... */ return; }
             }
 
             try
@@ -207,7 +200,7 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
                 patternBuffer.SetData(currentPatternData);
                 // Debug.Log($"[DWTRenderPass] Pattern ComputeBuffer 데이터 설정 완료 (Count: {count})");
             }
-            catch (Exception ex) { /* ... 에러 처리 ... */ ReleasePatternBuffer(); }
+            catch (Exception) { /* ... 에러 처리 ... */ ReleasePatternBuffer(); }
         }
 
 
@@ -236,13 +229,13 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
                 {
                     bitstreamBuffer = new ComputeBuffer(count, sizeof(uint), ComputeBufferType.Structured);
                 }
-                catch (Exception ex) { /* ... 에러 처리 ... */ return; }
+                catch (Exception) { /* ... 에러 처리 ... */ return; }
             }
             try
             {
                 bitstreamBuffer.SetData(data);
             }
-            catch (Exception ex) { /* ... 에러 처리 ... */ ReleaseBitstreamBuffer(); }
+            catch (Exception) { /* ... 에러 처리 ... */ ReleaseBitstreamBuffer(); }
         }
 
         public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
@@ -250,11 +243,11 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
             var desc = renderingData.cameraData.cameraTargetDescriptor;
             desc.depthBufferBits = 0;
             desc.msaaSamples = 1;
-            desc.sRGB = false;
 
             var bufferDesc = desc;
             bufferDesc.colorFormat = RenderTextureFormat.ARGBFloat;
             bufferDesc.enableRandomWrite = true;
+            bufferDesc.sRGB = false;
 
             RenderingUtils.ReAllocateIfNeeded(ref sourceTextureHandle, desc, FilterMode.Point, name: "_SourceCopyForDWT");
             RenderingUtils.ReAllocateIfNeeded(ref intermediateHandle, bufferDesc, FilterMode.Point, name: "_IntermediateDWT_IDWT");
@@ -302,7 +295,7 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
                             }
                         }
                     }
-                    catch (Exception ex) { /* ... 에러 처리 ... */ finalBitsToEmbed.Clear(); }
+                    catch (Exception) { /* ... 에러 처리 ... */ finalBitsToEmbed.Clear(); }
                 }
 
                 UpdateBitstreamBuffer(finalBitsToEmbed); // 비트스트림 버퍼 업데이트
@@ -317,53 +310,98 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
 
             // Debug.Log($"[DWTRenderPass] 최종 비트 길이: {currentBitLength} / BitBuffer:{bitstreamBufferValid} / PatternBuffer:{patternBufferValid} / Embed:{embedActive} / DataReady:{DataManager.IsDataReady} / Coeffs>0:{currentCoefficientsToUse > 0} => 최종 Embed:{shouldEmbed}");
 
-            cmd.SetComputeIntParam(computeShader, "Width", width);
-            cmd.SetComputeIntParam(computeShader, "Height", height);
-            cmd.SetComputeFloatParam(computeShader, "EmbeddingStrength", currentEmbeddingStrength); // 강도 전달
-            cmd.SetComputeIntParam(computeShader, "CoefficientsToUse", (int)currentCoefficientsToUse); // 사용할 계수 개수 전달
+            computeShader.SetInt("Width", width);
+            computeShader.SetInt("Height", height);
+            computeShader.SetFloat("EmbeddingStrength", currentEmbeddingStrength); // 강도 전달
+            computeShader.SetInt("CoefficientsToUse", (int)currentCoefficientsToUse); // 사용할 계수 개수 전달
 
             // --- 커널에 파라미터 바인딩 ---
             // DWT Pass 1
             if (dwtRowsKernelID >= 0)
             {
-                cmd.SetComputeTextureParam(computeShader, dwtRowsKernelID, "Source", sourceTextureHandle);
-                cmd.SetComputeTextureParam(computeShader, dwtRowsKernelID, "IntermediateBuffer", intermediateHandle);
+                computeShader.SetTexture(dwtRowsKernelID, "Source", sourceTextureHandle);
+                computeShader.SetTexture(dwtRowsKernelID, "IntermediateBuffer", intermediateHandle);
             }
             // DWT Pass 2 + Embed SS
             if (dwtColsKernelID >= 0)
             {
-                cmd.SetComputeTextureParam(computeShader, dwtColsKernelID, "IntermediateBuffer", intermediateHandle);
-                cmd.SetComputeTextureParam(computeShader, dwtColsKernelID, "DWTOutput", dwtOutputHandle);
+                computeShader.SetTexture(dwtColsKernelID, "IntermediateBuffer", intermediateHandle);
+                computeShader.SetTexture(dwtColsKernelID, "DWTOutput", dwtOutputHandle);
 
-                cmd.SetComputeIntParam(computeShader, "Embed", shouldEmbed ? 1 : 0);
+                computeShader.SetInt("Embed", shouldEmbed ? 1 : 0);
 
                 if (shouldEmbed)
                 {
-                    cmd.SetComputeIntParam(computeShader, "BitLength", currentBitLength);
-                    cmd.SetComputeBufferParam(computeShader, dwtColsKernelID, "Bitstream", bitstreamBuffer);
-                    cmd.SetComputeBufferParam(computeShader, dwtColsKernelID, "PatternBuffer", patternBuffer);
+                    computeShader.SetInt("BitLength", currentBitLength);
+                    computeShader.SetBuffer(dwtColsKernelID, "Bitstream", bitstreamBuffer);
+                    computeShader.SetBuffer(dwtColsKernelID, "PatternBuffer", patternBuffer);
                 }
-
                 else
                 {
-                    cmd.SetComputeIntParam(computeShader, "BitLength", 0);
+                    computeShader.SetInt("BitLength", 0);
                 }
                 // 패턴 버퍼 바인딩
                 // Debug.Log($"[DWTRenderPass] DWT Pass 2: Bitstream({currentBitLength}), PatternBuffer({patternBuffer.count}) 바인딩됨.");
-
             }
             // IDWT Pass 1
             if (idwtColsKernelID >= 0)
             {
-                cmd.SetComputeTextureParam(computeShader, idwtColsKernelID, "DWTOutput", dwtOutputHandle);
-                cmd.SetComputeTextureParam(computeShader, idwtColsKernelID, "IntermediateBuffer", intermediateHandle);
+                computeShader.SetTexture(idwtColsKernelID, "DWTOutput", dwtOutputHandle);
+                computeShader.SetTexture(idwtColsKernelID, "IntermediateBuffer", intermediateHandle);
             }
             // IDWT Pass 2
             if (idwtRowsKernelID >= 0)
             {
-                cmd.SetComputeTextureParam(computeShader, idwtRowsKernelID, "IntermediateBuffer", intermediateHandle);
-                cmd.SetComputeTextureParam(computeShader, idwtRowsKernelID, "IDWTOutput", idwtOutputHandle);
+                computeShader.SetTexture(idwtRowsKernelID, "IntermediateBuffer", intermediateHandle);
+                computeShader.SetTexture(idwtRowsKernelID, "IDWTOutput", idwtOutputHandle);
             }
+            //cmd.SetComputeIntParam(computeShader, "Width", width);
+            //cmd.SetComputeIntParam(computeShader, "Height", height);
+            //cmd.SetComputeFloatParam(computeShader, "EmbeddingStrength", currentEmbeddingStrength); // 강도 전달
+            //cmd.SetComputeIntParam(computeShader, "CoefficientsToUse", (int)currentCoefficientsToUse); // 사용할 계수 개수 전달
+
+            //// --- 커널에 파라미터 바인딩 ---
+            //// DWT Pass 1
+            //if (dwtRowsKernelID >= 0)
+            //{
+            //    cmd.SetComputeTextureParam(computeShader, dwtRowsKernelID, "Source", sourceTextureHandle);
+            //    cmd.SetComputeTextureParam(computeShader, dwtRowsKernelID, "IntermediateBuffer", intermediateHandle);
+            //}
+            //// DWT Pass 2 + Embed SS
+            //if (dwtColsKernelID >= 0)
+            //{
+            //    cmd.SetComputeTextureParam(computeShader, dwtColsKernelID, "IntermediateBuffer", intermediateHandle);
+            //    cmd.SetComputeTextureParam(computeShader, dwtColsKernelID, "DWTOutput", dwtOutputHandle);
+
+            //    cmd.SetComputeIntParam(computeShader, "Embed", shouldEmbed ? 1 : 0);
+
+            //    if (shouldEmbed)
+            //    {
+            //        cmd.SetComputeIntParam(computeShader, "BitLength", currentBitLength);
+            //        cmd.SetComputeBufferParam(computeShader, dwtColsKernelID, "Bitstream", bitstreamBuffer);
+            //        cmd.SetComputeBufferParam(computeShader, dwtColsKernelID, "PatternBuffer", patternBuffer);
+            //    }
+
+            //    else
+            //    {
+            //        cmd.SetComputeIntParam(computeShader, "BitLength", 0);
+            //    }
+            //    // 패턴 버퍼 바인딩
+            //    // Debug.Log($"[DWTRenderPass] DWT Pass 2: Bitstream({currentBitLength}), PatternBuffer({patternBuffer.count}) 바인딩됨.");
+
+            //}
+            //// IDWT Pass 1
+            //if (idwtColsKernelID >= 0)
+            //{
+            //    cmd.SetComputeTextureParam(computeShader, idwtColsKernelID, "DWTOutput", dwtOutputHandle);
+            //    cmd.SetComputeTextureParam(computeShader, idwtColsKernelID, "IntermediateBuffer", intermediateHandle);
+            //}
+            //// IDWT Pass 2
+            //if (idwtRowsKernelID >= 0)
+            //{
+            //    cmd.SetComputeTextureParam(computeShader, idwtRowsKernelID, "IntermediateBuffer", intermediateHandle);
+            //    cmd.SetComputeTextureParam(computeShader, idwtRowsKernelID, "IDWTOutput", idwtOutputHandle);
+            //}
         }
 
         public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
@@ -411,14 +449,20 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
             {
                 // DWT
                 cmd.DispatchCompute(computeShader, dwtRowsKernelID, threadGroupsX, threadGroupsY, 1);
+                //if (Input.GetKey(KeyCode.F1)) cmd.Blit(intermediateHandle, cameraTarget);
+
                 cmd.DispatchCompute(computeShader, dwtColsKernelID, threadGroupsX, threadGroupsY, 1); // Embed SS 포함 커널
+                //if (Input.GetKey(KeyCode.F2)) cmd.Blit(dwtOutputHandle, cameraTarget);
 
                 // IDWT
                 cmd.DispatchCompute(computeShader, idwtColsKernelID, threadGroupsX, threadGroupsY, 1);
+                //if(Input.GetKey(KeyCode.F3)) cmd.Blit(intermediateHandle, cameraTarget);
+
                 cmd.DispatchCompute(computeShader, idwtRowsKernelID, threadGroupsX, threadGroupsY, 1);
 
                 // 최종 결과 복사
                 cmd.Blit(idwtOutputHandle, cameraTarget);
+                //if(Input.GetKey(KeyCode.F4)) cmd.Blit(idwtOutputHandle, cameraTarget);
 
                 // 결과 저장용 설정 (필요시)
                 RTResultHolder.DedicatedSaveTarget = idwtOutputHandle;

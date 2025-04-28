@@ -567,12 +567,16 @@ public class RealtimeExtractorDebug : MonoBehaviour
                     }
                     else
                     {
-                        blockR[y, x] = 0f; blockG[y, x] = 0f; blockB[y, x] = 0f;
+                        blockR[y, x] = 0f;
+                        blockG[y, x] = 0f;
+                        blockB[y, x] = 0f;
                     }
                 }
                 else
                 {
-                    blockR[y, x] = 0f; blockG[y, x] = 0f; blockB[y, x] = 0f;
+                    blockR[y, x] = 0f;
+                    blockG[y, x] = 0f;
+                    blockB[y, x] = 0f;
                 }
             }
         }

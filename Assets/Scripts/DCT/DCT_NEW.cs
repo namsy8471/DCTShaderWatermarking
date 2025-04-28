@@ -197,10 +197,10 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
             var desc = renderingData.cameraData.cameraTargetDescriptor;
             desc.depthBufferBits = 0;
             desc.msaaSamples = 1;
-            desc.sRGB = false;
+
             int width = desc.width;
             int height = desc.height;
-            
+
             if (width <= 0 || height <= 0) return;
 
             // RT Handles 할당 (RGB 처리용 - ARGBFloat 사용)
@@ -212,6 +212,7 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
             RenderingUtils.ReAllocateIfNeeded(ref intermediateBufferRGBHandle, bufferDesc, FilterMode.Point, name: "_RGB_Intermediate");
             RenderingUtils.ReAllocateIfNeeded(ref dctOutputRGBHandle, bufferDesc, FilterMode.Point, name: "_RGB_DCTOutput");
             RenderingUtils.ReAllocateIfNeeded(ref finalOutputHandle, bufferDesc, FilterMode.Point, name: "_RGB_FinalOutput");
+
 
 
             // 블록 수 계산
