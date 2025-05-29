@@ -1,495 +1,600 @@
-// --- C# Script Code ---
+// --- InspectorExtractorDebug.cs (수정본) ---
 using UnityEngine;
 using UnityEngine.Rendering; // AsyncGPUReadbackRequest, GraphicsFormat
+using System.Collections;
 using System.Collections.Generic;
 using System;
 using System.Text; // StringBuilder
 using System.Linq;
 using Unity.Collections; // NativeArray
-using Unity.Mathematics;
-using UnityEngine.Experimental.Rendering; // Vector2Int (or UnityEngine.Vector2Int)
+// using Unity.Mathematics; // 현재 코드에서 직접 사용 안 함
+// using UnityEngine.Experimental.Rendering; // GraphicsFormatUtility 관련 (최신 버전에서는 UnityEngine.Rendering)
+using System.IO; // 파일 입출력
+using UnityEngine.UI;
+using UnityEngine.Experimental.Rendering; // 만약 UI 요소와 직접 연결한다면 필요 (현재 코드에는 없음)
 
+// OriginBlock.cs가 프로젝트 내에 있고, 해당 클래스 및 DataManager가 올바르게 설정되어 있다고 가정합니다.
+// 예: namespace OriginBlockUtil { public class OriginBlock { ... } } 이라면 using OriginBlockUtil; 추가
+// 예: public static class DataManager { public static byte[] EncryptedOriginData { get; set; } }
 
-// 이 스크립트를 씬의 카메라 또는 다른 게임 오브젝트에 추가하세요.
 public class InspectorExtractorDebug : MonoBehaviour
 {
-    // 추출 모드 선택용 Enum
-    public enum ExtractionMode { LSB, DCT_SS, DWT, SVD }
+    public enum ExtractionMode { LSB, DCT_SS, DWT, SVD } // SVD는 현재 미구현
 
     [Header("추출 설정")]
-    public KeyCode extractionKey = KeyCode.F10; // 추출 시작 키
-    public ExtractionMode extractionMode = ExtractionMode.DCT_SS; // 추출 모드 선택
-    public bool logPixelValues = false; // 디버깅용: 첫 픽셀 값 로깅 여부
+    public KeyCode startAutomatedAttackKey = KeyCode.F10; // 자동 공격 시작 키
+    public ExtractionMode extractionMode = ExtractionMode.DCT_SS;
+    public bool logPixelValuesForFirstBlock = false; // 첫 블록 픽셀 값 로깅 (DCT/DWT) 또는 첫 몇 픽셀 (LSB)
 
-    [Header("SS 설정 (DCT_SS 모드 시 사용)")]
-    [Tooltip("패턴 생성용 Secret Key (삽입 시와 동일해야 함)")]
-    public string ssSecretKey = "default_secret_key_rgb_ss"; // 삽입 시 사용한 키와 일치 필요
-    [Tooltip("1블록당 사용하는 AC 계수 수 (삽입 시와 동일해야 함)")]
+    [Header("JPEG 공격 설정")]
+    [Tooltip("쉼표로 구분된 JPEG 품질 값 (예: 90,70,50)")]
+    public string jpegQualitiesToTest = "90,70,50,30,10";
+    [Tooltip("공격 결과 저장 폴더 이름 (Application.persistentDataPath 하위)")]
+    public string outputSubFolderName = "RuntimeJpegAttacks";
+
+    [Header("SS 설정 (DCT_SS, DWT 모드 시 사용)")]
+    public string ssSecretKey = "default_secret_key_rgb_ss";
     [Range(1, 63)]
-    public int ssCoefficientsToUse = 10; // 삽입 시 사용한 개수와 일치 필요
+    public int ssCoefficientsToUse = 10;
 
-    [Header("타겟 렌더 텍스처 (읽기 전용)")]
-    [Tooltip("워터마크가 포함된 최종 결과 RenderTexture 참조")]
-    public Texture2D sourceTexture2d; // Inspector 할당 또는 아래 로직으로 찾기
+    [Header("타겟 원본 워터마크 이미지")]
+    [Tooltip("워터마크가 삽입된 원본 Texture2D (JPEG 공격 전 상태)")]
+    public Texture2D sourceWatermarkedTexture; // Inspector에서 할당
 
-    private bool isRequestPending = false; // 중복 요청 방지 플래그
-    private const int BLOCK_SIZE = 8;      // 처리 블록 크기 (HLSL과 일치)
-    private const int SYNC_PATTERN_LENGTH = 64; // ★★★ 동기화 패턴 비트 수 (실제 길이에 맞게 수정 필요) ★★★
+    // 내부 상태 변수
+    private bool isProcessingAutomatedAttack = false;
+    private bool isAsyncReadbackWaiting = false;
 
-    // 동기화 패턴 정의 (실제 사용하는 동기화 패턴으로 교체 필요)
-    private readonly int[] sync_pattern_cs = new int[SYNC_PATTERN_LENGTH] {
+    private const int BLOCK_SIZE = 8;
+    private const int HALF_BLOCK_SIZE = BLOCK_SIZE / 2; // DWT용
+    // OriginBlock.cs에 정의된 상수를 사용하거나 여기서 일치시켜야 함
+    // private const int SYNC_PATTERN_LENGTH = OriginBlock.SYNC_PATTERN_LENGTH;
+    // private const int LENGTH_FIELD_BITS = OriginBlock.LENGTH_FIELD_BITS;
+    // 직접 정의 시:
+    private const int SYNC_PATTERN_LENGTH = 64;
+    private const int LENGTH_FIELD_BITS = 16;
+
+
+    // 동기화 패턴 (OriginBlock.syncPattern과 일치해야 함)
+    // OriginBlock.syncPattern (List<uint>)을 사용하거나, 아래 int[]를 List<uint>로 변환해서 사용.
+    // FindValidatedWatermarkStartIndex 함수 시그니처에 맞춰 int[] 사용.
+    private readonly int[] sync_pattern_int_array_for_search = new int[SYNC_PATTERN_LENGTH] {
         1,1,1,1,0,0,0,0,1,1,1,1,0,0,0,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,
         0,0,1,1,0,0,1,1,0,0,1,1,0,0,1,1,1,1,0,0,1,1,0,0,0,1,1,1,0,1,1,0
     };
-    private string expectedSyncPatternString = null; // 비교용 문자열 (미리 생성)
 
-    // --- CPU DCT 계산을 위한 상수 ---
+    // CPU DCT 계산용 상수
     private const double MATH_PI = 3.141592653589793;
-    private readonly double DCT_SQRT1_N = 1.0 / Math.Sqrt(BLOCK_SIZE); // 1/sqrt(8)
-    private readonly double DCT_SQRT2_N = Math.Sqrt(2.0 / BLOCK_SIZE); // sqrt(2/8) = 0.5
+    private readonly double DCT_SQRT1_N = 1.0 / Math.Sqrt(BLOCK_SIZE);
+    private readonly double DCT_SQRT2_N = Math.Sqrt(2.0 / BLOCK_SIZE);
+
+    // 현재 공격 루프에서 사용될 변수들
+    private int currentProcessingQualityFactor;
+    private Texture2D currentAttackedTempTexture;
+    private GraphicsFormat currentReadbackFormatForLSB; // LSB 추출 시 사용된 포맷
+    private List<uint> masterExpectedFullPayloadBits; // 모든 QF에 대해 동일한 원본 페이로드
+    private List<string> attackSummaryLogLines;
 
     void Start()
     {
-        // 비교용 동기화 패턴 문자열 미리 생성
-        StringBuilder sb = new StringBuilder(SYNC_PATTERN_LENGTH);
-        for (int i = 0; i < SYNC_PATTERN_LENGTH; ++i)
-        {
-            if (i < sync_pattern_cs.Length) sb.Append(sync_pattern_cs[i]); else sb.Append('X');
-        }
-        expectedSyncPatternString = sb.ToString();
-        if (sync_pattern_cs.Length != SYNC_PATTERN_LENGTH)
-        {
-            Debug.LogWarning($"sync_pattern_cs 배열 길이({sync_pattern_cs.Length})와 SYNC_PATTERN_LENGTH({SYNC_PATTERN_LENGTH})가 일치하지 않습니다!");
-        }
-        Debug.Log($"예상 동기화 패턴 (첫 {SYNC_PATTERN_LENGTH}비트): {expectedSyncPatternString}");
+        Application.runInBackground = true; // 백그라운드 실행 허용
+        Debug.Log("InspectorExtractorDebug 초기화 완료. 자동 공격 시작 키: " + startAutomatedAttackKey);
+        // 필요한 경우 DataManager.EncryptedOriginData 초기화 로직 여기에 추가
+        // 예: 특정 파일에서 읽어와서 DataManager.EncryptedOriginData = ...;
     }
 
     void Update()
     {
-        if (Input.GetKeyDown(extractionKey) && !isRequestPending)
+        if (Input.GetKeyDown(startAutomatedAttackKey) && !isProcessingAutomatedAttack)
         {
-            if (sourceTexture2d == null || sourceTexture2d.width <= 0 || sourceTexture2d.height <= 0)
-            {
-                Debug.LogError($"Source RenderTexture가 유효하지 않습니다! Name: {sourceTexture2d?.name}, Size: {sourceTexture2d?.width}x{sourceTexture2d?.height}"); return;
-            }
+            if (!ValidateAutomatedAttackInputs()) return;
 
-            isRequestPending = true;
-
-            // ★★★ 추출 방식에 관계없이 최종 이미지를 읽지만, 데이터 형식은 모드에 따라 다르게 요청 ★★★
-            GraphicsFormat requestedGraphicsFormat = (extractionMode == ExtractionMode.LSB)
-                                                 ? sourceTexture2d.graphicsFormat // LSB는 원본 포맷 그대로 읽기 시도
-                                                 : GraphicsFormat.R32G32B32A32_SFloat; // DCT_SS는 float 데이터 필요
-
-            Debug.Log($"[{GetType().Name}] GPU Async Readback 요청 (Mode: {extractionMode}, Target: {sourceTexture2d.name}, Format: {requestedGraphicsFormat})...");
-            AsyncGPUReadback.Request(sourceTexture2d, 0, requestedGraphicsFormat, OnReadbackComplete);
+            isProcessingAutomatedAttack = true;
+            attackSummaryLogLines = new List<string>();
+            Debug.Log("===== 자동 JPEG 공격 및 BER 계산 시작 =====");
+            StartCoroutine(RunAllJpegAttacksAndExtractCoroutine());
         }
     }
 
-    // GPU Readback 완료 콜백
-    void OnReadbackComplete(AsyncGPUReadbackRequest request)
+    bool ValidateAutomatedAttackInputs()
     {
-        Debug.Log($"[{GetType().Name}] Async Readback Complete.");
-        if (request.hasError || request.layerCount <= 0)
+        if (sourceWatermarkedTexture == null)
         {
-            Debug.LogError($"GPU Readback Error! HasError: {request.hasError}, LayerCount: {request.layerCount}");
-            isRequestPending = false; return;
+            Debug.LogError("Source Watermarked Texture2D가 할당되지 않았습니다!"); return false;
+        }
+        if (!sourceWatermarkedTexture.isReadable)
+        {
+            Debug.LogError("Source Watermarked Texture2D의 Import Settings에서 'Read/Write Enabled'를 반드시 체크해주세요."); return false;
+        }
+        // DataManager.EncryptedOriginData는 OriginBlock.cs를 통해 암호화된 원본 데이터 byte[] 이어야 함.
+        if (DataManager.EncryptedOriginData == null || DataManager.EncryptedOriginData.Length == 0)
+        {
+            Debug.LogError("DataManager.EncryptedOriginData가 비어있거나 null입니다. 원본 워터마크 데이터를 준비해야 합니다."); return false;
+        }
+        if (string.IsNullOrWhiteSpace(jpegQualitiesToTest))
+        {
+            Debug.LogError("JPEG Qualities 문자열이 비어있습니다."); return false;
+        }
+        try
+        {
+            var qfs = jpegQualitiesToTest.Split(',').Select(q => int.Parse(q.Trim())).ToArray();
+            if (qfs.Length == 0) throw new FormatException("No qualities parsed.");
+            foreach (var qf in qfs) if (qf < 0 || qf > 100) throw new FormatException("Quality must be 0-100.");
+        }
+        catch (FormatException e)
+        {
+            Debug.LogError($"JPEG 품질 값 문자열 '{jpegQualitiesToTest}' 파싱 오류: {e.Message}"); return false;
+        }
+        return true;
+    }
+
+    IEnumerator RunAllJpegAttacksAndExtractCoroutine()
+    {
+        // 1. 마스터 예상 페이로드 준비 (모든 QF에 공통으로 사용)
+        try
+        {
+            masterExpectedFullPayloadBits = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
+            if (masterExpectedFullPayloadBits == null || masterExpectedFullPayloadBits.Count == 0)
+            {
+                Debug.LogError("마스터 예상 페이로드 생성 실패!");
+                isProcessingAutomatedAttack = false;
+                yield break;
+            }
+            Debug.Log($"마스터 예상 페이로드 생성 완료: {masterExpectedFullPayloadBits.Count} 비트");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"마스터 예상 페이로드 생성 중 예외: {e.Message}\n{e.StackTrace}");
+            isProcessingAutomatedAttack = false;
+            yield break;
+        }
+
+        string[] qfStrings = jpegQualitiesToTest.Split(',').Select(q => q.Trim()).Where(q => !string.IsNullOrEmpty(q)).ToArray();
+        int[] qfs = Array.ConvertAll(qfStrings, int.Parse);
+
+        string baseOutputDir = Path.Combine(Application.persistentDataPath, outputSubFolderName);
+        string techniqueDir = Path.Combine(baseOutputDir, extractionMode.ToString());
+        if (!Directory.Exists(techniqueDir)) Directory.CreateDirectory(techniqueDir);
+
+        attackSummaryLogLines.Add($"### JPEG Attack Summary - Mode: {extractionMode} ###");
+        attackSummaryLogLines.Add($"Source Image: {sourceWatermarkedTexture.name} ({sourceWatermarkedTexture.width}x{sourceWatermarkedTexture.height}, Format: {sourceWatermarkedTexture.graphicsFormat})");
+        attackSummaryLogLines.Add($"Expected Payload Bit Length: {masterExpectedFullPayloadBits.Count}");
+        if (extractionMode == ExtractionMode.DCT_SS || extractionMode == ExtractionMode.DWT)
+        {
+            attackSummaryLogLines.Add($"SS Key: '{ssSecretKey}', SS Coeffs To Use: {ssCoefficientsToUse}");
+        }
+        attackSummaryLogLines.Add("------------------------------------");
+
+        for (int i = 0; i < qfs.Length; i++)
+        {
+            currentProcessingQualityFactor = qfs[i];
+            Debug.Log($"--- 현재 처리 중인 JPEG 품질(QF): {currentProcessingQualityFactor} ---");
+
+            byte[] jpegBytes = sourceWatermarkedTexture.EncodeToJPG(currentProcessingQualityFactor);
+            string attackedImageFileName = $"{sourceWatermarkedTexture.name}_QF{currentProcessingQualityFactor}.jpg";
+            string attackedImageFilePath = Path.Combine(techniqueDir, attackedImageFileName);
+            File.WriteAllBytes(attackedImageFilePath, jpegBytes);
+            Debug.Log($"공격된 이미지 저장됨: {attackedImageFilePath} ({jpegBytes.Length / 1024.0f:F2} KB)");
+
+            // JPEG으로 압축된 데이터를 새 Texture2D로 로드
+            currentAttackedTempTexture = new Texture2D(2, 2, (TextureFormat)sourceWatermarkedTexture.graphicsFormat, false, false); // mipChain=false, linear=false (색 공간은 원본 따름)
+            if (!currentAttackedTempTexture.LoadImage(jpegBytes))
+            {
+                Debug.LogError($"QF {currentProcessingQualityFactor}: JPEG 바이트를 Texture2D로 로드 실패.");
+                attackSummaryLogLines.Add($"QF {currentProcessingQualityFactor}: Error loading attacked image into Texture2D.");
+                Destroy(currentAttackedTempTexture); currentAttackedTempTexture = null;
+                continue;
+            }
+            // LoadImage 후 텍스처 크기가 원본과 다를 수 있으므로 확인 (보통은 맞춰줌)
+            // Debug.Log($"Loaded attacked texture: {currentAttackedTempTexture.width}x{currentAttackedTempTexture.height}, Format: {currentAttackedTempTexture.graphicsFormat}");
+
+
+            // AsyncGPUReadback에 사용할 그래픽 포맷 결정
+            if (extractionMode == ExtractionMode.LSB)
+            {
+                currentReadbackFormatForLSB = currentAttackedTempTexture.graphicsFormat; // LSB는 현재 텍스처 포맷 그대로 읽기 시도
+            }
+            else
+            { // DCT_SS, DWT
+                currentReadbackFormatForLSB = GraphicsFormat.R32G32B32A32_SFloat; // float 데이터 필요
+            }
+
+            isAsyncReadbackWaiting = true;
+            Debug.Log($"AsyncGPUReadback 요청 (Target: Attacked QF{currentProcessingQualityFactor} Texture, Requested Format: {currentReadbackFormatForLSB})...");
+            AsyncGPUReadback.Request(currentAttackedTempTexture, 0, currentReadbackFormatForLSB, OnAttackedImageReadbackComplete);
+
+            yield return new WaitUntil(() => !isAsyncReadbackWaiting); // 콜백 완료 대기
+
+            if (currentAttackedTempTexture != null)
+            {
+                Destroy(currentAttackedTempTexture);
+                currentAttackedTempTexture = null;
+            }
+            Debug.Log($"--- QF: {currentProcessingQualityFactor} 처리 완료 ---");
+            yield return null;
+        }
+
+        string summaryFileName = $"Summary_{extractionMode}_{DateTime.Now:yyyyMMdd_HHmmss}.txt";
+        string summaryFilePath = Path.Combine(techniqueDir, summaryFileName);
+        File.WriteAllLines(summaryFilePath, attackSummaryLogLines);
+        Debug.Log($"===== 모든 JPEG 공격 처리 완료. 요약 파일 저장: {summaryFilePath} =====");
+        Debug.Log($"결과 저장 경로: {techniqueDir}");
+
+
+        isProcessingAutomatedAttack = false;
+    }
+
+    // JPEG 공격 후 생성된 이미지에 대한 Readback 완료 콜백
+    void OnAttackedImageReadbackComplete(AsyncGPUReadbackRequest request)
+    {
+        Debug.Log($"Async Readback 완료 (QF {currentProcessingQualityFactor}).");
+        if (!request.done || request.hasError || request.layerCount <= 0)
+        {
+            Debug.LogError($"GPU Readback 오류! QF: {currentProcessingQualityFactor}, HasError: {request.hasError}, LayerCount: {request.layerCount}, Done: {request.done}");
+            attackSummaryLogLines.Add($"QF {currentProcessingQualityFactor}: GPU Readback Error.");
+            isAsyncReadbackWaiting = false; return;
         }
         int width = request.width; int height = request.height;
         if (width <= 0 || height <= 0)
         {
-            Debug.LogError($"GPU Readback invalid dimensions: {width}x{height}");
-            isRequestPending = false; return;
+            Debug.LogError($"GPU Readback 유효하지 않은 크기 QF {currentProcessingQualityFactor}: {width}x{height}");
+            attackSummaryLogLines.Add($"QF {currentProcessingQualityFactor}: GPU Readback invalid dimensions.");
+            isAsyncReadbackWaiting = false; return;
         }
 
-        List<int> extractedBits = new List<int>();
-        List<uint> expectedFullBits = new List<uint>();
-        int totalBlocks = 0; // 실제 처리/비교할 블록 수
-
+        List<int> extractedBits = new List<int>(); // 추출된 비트는 0 또는 1의 int
         System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         try
         {
-            totalBlocks = ((width + BLOCK_SIZE - 1) / BLOCK_SIZE) * ((height + BLOCK_SIZE - 1) / BLOCK_SIZE);
-            if (totalBlocks > 0 && DataManager.EncryptedOriginData != null)
-            {
-                // 실제 임베딩 시 사용했을 페이로드 생성
-                List<uint> fullPayload = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
-                if (fullPayload != null && fullPayload.Count > 0)
-                {
-                    // GPU에 전달되었을 비트 수 계산 (totalBlocks 와 페이로드 길이 중 작은 값)
-                    int bitsSentToGpu = Math.Min(fullPayload.Count, totalBlocks);
-                    // 비교 대상은 GPU에 전달된 비트열
-                    expectedFullBits.AddRange(fullPayload.Take(bitsSentToGpu));
-                    Debug.Log($"비교 대상 비트 생성 완료: {expectedFullBits.Count} 비트 (Max Blocks: {totalBlocks}, Payload Size: {fullPayload.Count})");
-                }
-                else { Debug.LogWarning("예상 페이로드 생성 실패 또는 비어 있음."); }
-            }
-            else { Debug.LogWarning("예상 페이로드 생성 조건 미충족 (totalBlocks 또는 데이터 없음)."); }
+            int numBlocksX = (width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+            int numBlocksY = (height + BLOCK_SIZE - 1) / BLOCK_SIZE;
+            int actualTotalBlocksOnCurrentImage = numBlocksX * numBlocksY;
 
-            int bitsToExtract = expectedFullBits.Count; // 추출/비교할 길이는 예상 비트 길이 기준
-            if (bitsToExtract == 0) throw new Exception("비교할 예상 비트가 없습니다.");
-            extractedBits.Capacity = bitsToExtract;
+            int maxPossibleBitsFromPayload = masterExpectedFullPayloadBits.Count;
 
-            // --- DCT Spread Spectrum 추출 로직 ---
+
             if (extractionMode == ExtractionMode.DCT_SS)
             {
-                Debug.Log("DCT Spread Spectrum 모드로 비트 추출 시도...");
-                Debug.LogWarning("CPU에서 DCT를 수행합니다. 성능이 매우 느릴 수 있습니다!");
-                Debug.LogWarning("이미지 데이터에서 읽어오는 중...");
+                Debug.Log($"[QF {currentProcessingQualityFactor}] DCT_SS 모드로 비트 추출 (CPU)...");
+                //if (request.format != GraphicsFormat.R32G32B32A32_SFloat)
+                //{
+                //    Debug.LogError($"DCT_SS Error: Readback format is {request.format}, but R32G32B32A32_SFloat was expected for float data.");
+                //}
+                NativeArray<float> pixelDataFloat = request.GetData<float>();
+                if (logPixelValuesForFirstBlock && pixelDataFloat.Length >= 4) Debug.Log($"[QF {currentProcessingQualityFactor} Pixel(0,0)] R={pixelDataFloat[0]:G9}, G={pixelDataFloat[1]:G9}, B={pixelDataFloat[2]:G9}, A={pixelDataFloat[3]:G9}");
 
-                NativeArray<float> pixelData = request.GetData<float>();
-                Debug.Log($"Readback data as float array (Length: {pixelData.Length}). Expecting {width * height * 4}.");
-                if (logPixelValues && pixelData.Length >= 4) Debug.Log($"[Pixel(0,0)] R={pixelData[0]:G9}, G={pixelData[1]:G9}, B={pixelData[2]:G9}, A={pixelData[3]:G9}");
+                float[] patternBuffer = GeneratePatternBufferCPU(actualTotalBlocksOnCurrentImage, ssCoefficientsToUse, ssSecretKey);
+                Vector2Int[] zigzag = GetZigzagIndices(); // 사용자 기존 코드의 zigzag 배열 사용
+                int actualCoeffsToProcess = Math.Min(ssCoefficientsToUse, zigzag.Length); // 사용할 실제 계수 수
 
-                // ★★★ 수정: 올림 나눗셈으로 블록 수 계산 ★★★
-                int numBlocksX = (width + BLOCK_SIZE - 1) / BLOCK_SIZE;
-                int numBlocksY = (height + BLOCK_SIZE - 1) / BLOCK_SIZE;
-                Debug.Log($"Total Blocks: {totalBlocks} ({numBlocksX}x{numBlocksY}), Bits to Extract: {bitsToExtract}");
-
-                // 패턴 버퍼 생성
-                float[] patternBuffer = new float[totalBlocks * ssCoefficientsToUse];
-                System.Random prng = new System.Random(ssSecretKey.GetHashCode());
-                for (int i = 0; i < patternBuffer.Length; ++i) patternBuffer[i] = (prng.NextDouble() < 0.5) ? -1f : 1f;
-
-                // 지그재그 인덱스
-                Vector2Int[] zigzag = { /* ... 이전과 동일 ... */
-                    new Vector2Int(0, 1), new Vector2Int(1, 0), new Vector2Int(2, 0), new Vector2Int(1, 1), new Vector2Int(0, 2), new Vector2Int(0, 3), new Vector2Int(1, 2), new Vector2Int(2, 1),
-                    new Vector2Int(3, 0), new Vector2Int(4, 0), new Vector2Int(3, 1), new Vector2Int(2, 2), new Vector2Int(1, 3), new Vector2Int(0, 4), new Vector2Int(0, 5), new Vector2Int(1, 4),
-                    new Vector2Int(2, 3), new Vector2Int(3, 2), new Vector2Int(4, 1), new Vector2Int(5, 0), new Vector2Int(6, 0), new Vector2Int(5, 1), new Vector2Int(4, 2), new Vector2Int(3, 3),
-                    new Vector2Int(2, 4), new Vector2Int(1, 5), new Vector2Int(0, 6), new Vector2Int(0, 7), new Vector2Int(1, 6), new Vector2Int(2, 5), new Vector2Int(3, 4), new Vector2Int(4, 3),
-                    new Vector2Int(5, 2), new Vector2Int(6, 1), new Vector2Int(7, 0), new Vector2Int(7, 1), new Vector2Int(6, 2), new Vector2Int(5, 3), new Vector2Int(4, 4), new Vector2Int(3, 5),
-                    new Vector2Int(2, 6), new Vector2Int(1, 7), new Vector2Int(2, 7), new Vector2Int(3, 6), new Vector2Int(4, 5), new Vector2Int(5, 4), new Vector2Int(6, 3), new Vector2Int(7, 2),
-                    new Vector2Int(7, 3), new Vector2Int(6, 4), new Vector2Int(5, 5), new Vector2Int(4, 6), new Vector2Int(3, 7), new Vector2Int(4, 7), new Vector2Int(5, 6), new Vector2Int(6, 5),
-                    new Vector2Int(7, 4), new Vector2Int(7, 5), new Vector2Int(6, 6), new Vector2Int(5, 7), new Vector2Int(6, 7), new Vector2Int(7, 6), new Vector2Int(7, 7)
-                    };
-                if (ssCoefficientsToUse > zigzag.Length) ssCoefficientsToUse = zigzag.Length;
-
-                // 임시 배열 선언 (CPU DCT용)
                 float[,] blockR = new float[BLOCK_SIZE, BLOCK_SIZE];
-                float[,] blockG = new float[BLOCK_SIZE, BLOCK_SIZE]; // 필요시 G, B도 처리
+                float[,] blockG = new float[BLOCK_SIZE, BLOCK_SIZE];
                 float[,] blockB = new float[BLOCK_SIZE, BLOCK_SIZE];
+                double[,] dctCoeffsR = new double[BLOCK_SIZE, BLOCK_SIZE];
+                double[,] dctCoeffsG = new double[BLOCK_SIZE, BLOCK_SIZE];
+                double[,] dctCoeffsB = new double[BLOCK_SIZE, BLOCK_SIZE];
 
-                double[,] dctCoeffsR = new double[BLOCK_SIZE, BLOCK_SIZE]; // DCT 결과 저장용 (double)
-                double[,] dctCoeffsG = new double[BLOCK_SIZE, BLOCK_SIZE]; // DCT 결과 저장용 (double)
-                double[,] dctCoeffsB = new double[BLOCK_SIZE, BLOCK_SIZE]; // DCT 결과 저장용 (double)
-
-                // 각 블록 처리
-                for (int blockIdx = 0; blockIdx < bitsToExtract; ++blockIdx)
+                // DCT/DWT는 블록당 1비트 추출하므로, 실제 추출 루프는 actualTotalBlocksOnCurrentImage 만큼 돌아야 함.
+                // BER 비교는 masterExpectedFullPayloadBits 길이만큼만 의미가 있음.
+                // 추출은 이미지 전체에서 하고, 비교 시 동기화로 찾아냄.
+                for (int blockIdx = 0; blockIdx < actualTotalBlocksOnCurrentImage; ++blockIdx)
                 {
-                    int blockY = blockIdx / numBlocksX; int blockX = blockIdx % numBlocksX;
+                    int blkY = blockIdx / numBlocksX; int blkX = blockIdx % numBlocksX;
+                    ExtractPixelBlockFloat_CPU(pixelDataFloat, width, height, blkX, blkY, blockR, blockG, blockB);
 
-                    // ★★★ 1. 현재 블록의 픽셀 데이터 추출 (R 채널만) ★★★
-                    for (int y = 0; y < BLOCK_SIZE; ++y)
+                    DCT2D_CPU(blockR, dctCoeffsR); DCT2D_CPU(blockG, dctCoeffsG); DCT2D_CPU(blockB, dctCoeffsB);
+
+                    double correlationSumR = 0.0, correlationSumG = 0.0, correlationSumB = 0.0;
+                    int patternBaseIndex = blockIdx * actualCoeffsToProcess; // 실제 사용할 계수 수 기준
+                    for (int k = 0; k < actualCoeffsToProcess; ++k)
                     {
-                        for (int x = 0; x < BLOCK_SIZE; ++x)
+                        Vector2Int uv = zigzag[k]; // 0부터 actualCoeffsToProcess-1 까지
+                        if (patternBaseIndex + k < patternBuffer.Length)
                         {
-                            int pixelX = blockX * BLOCK_SIZE + x;
-                            int pixelY = blockY * BLOCK_SIZE + y;
-                            if (pixelX < width && pixelY < height)
-                            {
-                                int dataIndex = (pixelY * width + pixelX) * 4; // R 채널 인덱스
-                                if (dataIndex < pixelData.Length) blockR[y, x] = pixelData[dataIndex];
-                                else blockR[y, x] = 0f;
-                            }
-                            else { blockR[y, x] = 0f; }
+                            correlationSumR += dctCoeffsR[uv.y, uv.x] * patternBuffer[patternBaseIndex + k];
+                            correlationSumG += dctCoeffsG[uv.y, uv.x] * patternBuffer[patternBaseIndex + k];
+                            correlationSumB += dctCoeffsB[uv.y, uv.x] * patternBuffer[patternBaseIndex + k];
                         }
+                        else { break; } // 패턴 버퍼 범위 초과 시 중단
                     }
-
-                    // ★★★ 2. 추출된 블록에 대해 CPU에서 2D DCT 수행 ★★★
-                    DCT2D_CPU(blockR, dctCoeffsR); // R 채널 DCT 수행
-                    DCT2D_CPU(blockG, dctCoeffsG); // R 채널 DCT 수행
-                    DCT2D_CPU(blockB, dctCoeffsB); // R 채널 DCT 수행
-
-                    // ★★★ 3. 계산된 DCT 계수와 패턴으로 상관관계 계산 ★★★
-                    double correlationSumR = 0.0; // double로 계산하여 정밀도 확보
-                    double correlationSumG = 0.0;
-                    double correlationSumB = 0.0;
-
-                    int patternBaseIndex = blockIdx * ssCoefficientsToUse;
-                    for (int i = 0; i < ssCoefficientsToUse; ++i)
-                    {
-                        Vector2Int uv = zigzag[i]; // 사용할 AC 계수 좌표
-                                                   // DCT2D_CPU 결과는 [v, u] 순서로 저장됨
-                                                   // DCT2D_CPU 결과는 [v, u] 순서로 저장됨
-                        double coeffValueR = dctCoeffsR[uv.y, uv.x];
-                        double coeffValueG = dctCoeffsG[uv.y, uv.x];
-                        double coeffValueB = dctCoeffsB[uv.y, uv.x];
-
-                        if (patternBaseIndex + i < patternBuffer.Length)
-                        {
-                            float patternValue = patternBuffer[patternBaseIndex + i];
-                            correlationSumR += coeffValueR * patternValue;
-                            correlationSumG += coeffValueG * patternValue;
-                            correlationSumB += coeffValueB * patternValue;
-                        }
-                    }
-
-                    // ★★★ 4. 비트 판정 (평균 상관관계 사용) ★★★
                     double finalCorrelation = (correlationSumR + correlationSumG + correlationSumB) / 3.0;
-                    extractedBits.Add(finalCorrelation >= 0.0 ? 1 : 0); // double 비교
-                    // end for blockIdx
-
+                    extractedBits.Add(finalCorrelation >= 0.0 ? 1 : 0);
                 }
-
             }
-            // --- LSB 추출 로직 ---
-            else
-            { // LSB
-                Debug.Log("LSB 모드로 비트 추출 시도...");
+            else if (extractionMode == ExtractionMode.LSB)
+            {
+                Debug.Log($"[QF {currentProcessingQualityFactor}] LSB 모드로 비트 추출 (CPU)...");
                 NativeArray<byte> byteData = request.GetData<byte>();
-                /* ... 이전 LSB 로직과 거의 동일 ... */
-                int bytesPerPixel = (int)GraphicsFormatUtility.GetBlockSize(sourceTexture2d.graphicsFormat);
-                // ... (로그 및 비트 수 계산) ...
-                extractedBits.Capacity = bitsToExtract;
+                int bytesPerPixel = GetFormatBytesPerPixel(currentReadbackFormatForLSB); // 이전에 결정된 포맷 사용
 
-                int blueChannelByteOffset = 2; // 기본값 (RGBA32 가정) - 포맷 따라 조정 필요!
-                var sourceFormat = sourceTexture2d.graphicsFormat;
-                if (sourceFormat == GraphicsFormat.B8G8R8A8_SRGB || sourceFormat == GraphicsFormat.B8G8R8A8_UNorm) blueChannelByteOffset = 0;
-                // ... 다른 포맷 검사 ...
-
-                for (int i = 0; i < bitsToExtract; ++i)
+                if (bytesPerPixel == 0)
                 {
-                    int pixelY = i / width; int pixelX = i % width;
-                    int byteBaseIndex = (pixelY * width + pixelX) * bytesPerPixel;
-                    int blueByteIndex = byteBaseIndex + blueChannelByteOffset;
-                    if (blueByteIndex < byteData.Length) extractedBits.Add(byteData[blueByteIndex] & 1);
-                    else extractedBits.Add(0);
+                    Debug.LogError($"[QF {currentProcessingQualityFactor}] LSB: Bytes per pixel for format {currentReadbackFormatForLSB} is 0. Cannot extract.");
+                    // 이 경우 extractedBits는 비어있게 됨. BER=1.0 예상.
                 }
+                else
+                {
+                    int blueChannelByteOffset = 2; // RGBA32 기본 (R=0, G=1, B=2, A=3)
+                    if (currentReadbackFormatForLSB == GraphicsFormat.B8G8R8A8_SRGB || currentReadbackFormatForLSB == GraphicsFormat.B8G8R8A8_UNorm ||
+                        currentReadbackFormatForLSB == GraphicsFormat.B8G8R8_SRGB || currentReadbackFormatForLSB == GraphicsFormat.B8G8R8_UNorm)
+                        blueChannelByteOffset = 0; // B가 첫 바이트 (B=0, G=1, R=2, A=3)
+                    // 예시: R8G8B8_UNorm (RGB24)는 B가 2. (R=0, G=1, B=2)
+                    // 더 많은 포맷에 대한 정확한 채널 오프셋을 확인하고 적용해야 합니다.
 
+                    int totalPixels = width * height;
+                    if (logPixelValuesForFirstBlock && byteData.Length >= bytesPerPixel * 5)
+                    { // 첫 5픽셀 로깅 시도
+                        for (int p = 0; p < 5; ++p)
+                        {
+                            Debug.Log($"[QF {currentProcessingQualityFactor} LSB Pixel {p}] Byte0={byteData[p * bytesPerPixel + 0]}, Byte1={byteData[p * bytesPerPixel + 1]}, Byte2={byteData[p * bytesPerPixel + 2]}" + (bytesPerPixel > 3 ? $", Byte3={byteData[p * bytesPerPixel + 3]}" : ""));
+                        }
+                    }
+
+                    for (int i = 0; i < totalPixels; ++i) // 이미지 전체 픽셀에서 추출 시도
+                    {
+                        int pixelY = i / width; int pixelX = i % width;
+                        int byteBaseIndex = (pixelY * width + pixelX) * bytesPerPixel;
+                        int targetByteIndex = byteBaseIndex + blueChannelByteOffset;
+                        if (targetByteIndex < byteData.Length) extractedBits.Add(byteData[targetByteIndex] & 1);
+                        else { break; } // 데이터 배열 범위 벗어나면 중단
+                    }
+                }
+            }
+            else if (extractionMode == ExtractionMode.DWT)
+            {
+                Debug.LogWarning($"[QF {currentProcessingQualityFactor}] DWT 추출 모드는 이 코드에서 아직 상세히 구현되지 않았습니다.");
+                // 여기에 DWT 추출 로직 (CPU 또는 GPU 호출)
             }
 
-            // 1. 비교 대상이 될 전체 예상 비트스트림 생성 (헤더 포함)
-            if (expectedFullBits == null || expectedFullBits.Count == 0)
+            Debug.Log($"[QF {currentProcessingQualityFactor}] 총 {extractedBits.Count} 비트 추출 완료.");
+
+            // BER 계산
+            if (masterExpectedFullPayloadBits == null || masterExpectedFullPayloadBits.Count == 0)
             {
-                Debug.LogError("예상 비트스트림을 생성할 수 없습니다!");
+                Debug.LogError($"[QF {currentProcessingQualityFactor}] 기준 페이로드가 없어 BER 계산 불가!");
+                attackSummaryLogLines.Add($"QF {currentProcessingQualityFactor}: BER = N/A (No expected bits) (Extracted: {extractedBits.Count})");
             }
             else
             {
-                // 2. 동기화 패턴 탐색 및 페이로드 검증 함수 호출
-                int syncStartIndex = FindValidatedWatermarkStartIndex(extractedBits, expectedFullBits, sync_pattern_cs);
+                // FindValidatedWatermarkStartIndex는 List<uint> expected, int[] syncPattern을 받음
+                // OriginBlock.syncPattern (List<uint>)을 int[]로 변환하여 전달하거나,
+                // 또는 FindValidatedWatermarkStartIndex가 List<uint> syncPattern을 받도록 수정.
+                // 여기서는 사용자 코드의 sync_pattern_int_array_for_search (int[])를 사용.
+                // 이 int[]는 OriginBlock.syncPattern과 내용이 동일해야 함.
+                int syncStartIndex = FindValidatedWatermarkStartIndex_Internal(extractedBits, masterExpectedFullPayloadBits, sync_pattern_int_array_for_search);
 
-                // 3. 결과 처리 (예: 성공 시 페이로드 사용)
                 if (syncStartIndex != -1)
                 {
-                    int payloadStartIndex = syncStartIndex + SYNC_PATTERN_LENGTH;
-                    int payloadLength = extractedBits.Count - payloadStartIndex;
-                    if (payloadLength > 0)
+                    int expectedDataLenFieldStart = SYNC_PATTERN_LENGTH; // 전역 const 또는 OriginBlock.SYNC_PATTERN_LENGTH
+                    int expectedDataLenFieldEnd = expectedDataLenFieldStart + LENGTH_FIELD_BITS; // 전역 const 또는 OriginBlock.LENGTH_FIELD_BITS
+
+                    if (masterExpectedFullPayloadBits.Count < expectedDataLenFieldEnd)
                     {
-                        Debug.Log($"성공적으로 동기화됨. 인덱스 {payloadStartIndex} 부터 {payloadLength} 비트의 페이로드 사용 가능.");
-                        // TODO: 여기서 payloadBits를 실제 데이터로 변환하는 등의 작업 수행
-                        // List<int> payloadBits = extractedBits.GetRange(payloadStartIndex, payloadLength);
-                    }
-                }
-                // else: 함수 내부에서 이미 실패 로그 출력됨
-            }
-
-            stopwatch.Stop();
-            Debug.Log($"CPU 처리 시간: {stopwatch.Elapsed.TotalMilliseconds:F2} ms ({extractedBits.Count} 비트 처리).");
-
-        }
-        catch (Exception e) { Debug.LogError($"추출/처리 중 오류 발생: {e.Message}\n{e.StackTrace}"); }
-        finally { isRequestPending = false; }
-    }
-
-
-    /// <summary>
-    /// 추출된 비트열 내에서 동기화 패턴을 탐색하고, 찾으면 페이로드 부분까지 비교하여
-    /// 동기화 패턴과 페이로드가 모두 일치하는 첫 번째 시작 인덱스를 반환합니다.
-    /// </summary>
-    /// <param name="extractedBits">GPU에서 추출된 전체 비트 리스트</param>
-    /// <param name="expectedFullPayloadWithHeader">예상되는 전체 비트 리스트 (동기화 패턴 포함)</param>
-    /// <param name="syncPattern">동기화 패턴 int 배열</param>
-    /// <returns>검증된 동기화 패턴의 시작 인덱스 (0부터 시작). 유효한 패턴을 찾지 못하면 -1 반환.</returns>
-    private int FindValidatedWatermarkStartIndex(List<int> extractedBits, List<uint> expectedFullPayloadWithHeader, int[] syncPattern)
-    {
-        int syncPatternLength = syncPattern.Length;
-
-        // --- 입력 유효성 검사 ---
-        if (extractedBits == null || expectedFullPayloadWithHeader == null || syncPattern == null || syncPatternLength == 0)
-        {
-            Debug.LogError("[FindValidatedWatermarkStartIndex] 입력 데이터가 유효하지 않습니다.");
-            return -1; // 오류 코드 -1
-        }
-        // 최소한 동기화 패턴 길이만큼의 비트는 추출되어야 함
-        if (extractedBits.Count < syncPatternLength)
-        {
-            Debug.LogWarning($"추출된 비트 수({extractedBits.Count})가 동기화 패턴 길이({syncPatternLength})보다 짧아 탐색이 불가능합니다.");
-            return -1;
-        }
-        // 예상 페이로드에도 최소한 동기화 패턴은 있어야 함
-        if (expectedFullPayloadWithHeader.Count < syncPatternLength)
-        {
-            Debug.LogWarning($"예상 페이로드 길이({expectedFullPayloadWithHeader.Count})가 동기화 패턴 길이({syncPatternLength})보다 짧습니다.");
-            // 이 경우 동기화 패턴만 비교할 수도 있으나, 현재 로직은 페이로드 검증까지 하므로 실패 처리
-            return -1;
-        }
-
-        // --- 동기화 패턴 탐색 루프 ---
-        // extractedBits 리스트에서 syncPattern이 시작될 수 있는 마지막 위치까지만 탐색
-        int maxSearchStart = extractedBits.Count - syncPatternLength;
-        Debug.Log($"동기화 패턴 탐색 시작 (추출된 비트 수: {extractedBits.Count}, 최대 {maxSearchStart + 1} 위치 확인)...");
-        System.Diagnostics.Stopwatch searchStopwatch = System.Diagnostics.Stopwatch.StartNew(); // 탐색 시간 측정
-
-        for (int i = 0; i <= maxSearchStart; ++i) // i는 현재 탐색 중인 동기화 패턴의 시작 인덱스
-        {
-            // 1. 현재 위치(i)에서 시작하는 부분이 동기화 패턴과 일치하는지 확인
-            bool isSyncMatch = true;
-            for (int j = 0; j < syncPatternLength; ++j)
-            {
-                if (extractedBits[i + j] != syncPattern[j])
-                {
-                    isSyncMatch = false; // 하나라도 다르면 불일치
-                    break; // 내부 루프 탈출
-                }
-            }
-
-            // 2. 동기화 패턴이 일치했다면, 뒤따르는 페이로드도 검증
-            if (isSyncMatch)
-            {
-                Debug.Log($"인덱스 {i}에서 동기화 패턴 후보 발견! 페이로드 검증 시작...");
-
-                int payloadStartIndexInExtracted = i + syncPatternLength; // 추출된 비트에서 페이로드 시작 위치
-                int payloadStartIndexInExpected = syncPatternLength;    // 예상 비트열에서 페이로드 시작 위치
-                int availableExtractedPayload = extractedBits.Count - payloadStartIndexInExtracted; // 추출된 비트 중 남은 페이로드 길이
-                int expectedPayloadLength = expectedFullPayloadWithHeader.Count - payloadStartIndexInExpected; // 예상 페이로드 길이
-                int comparePayloadLength = Math.Min(availableExtractedPayload, expectedPayloadLength); // 비교할 실제 페이로드 길이
-
-                // 비교할 페이로드가 있는지 확인
-                if (comparePayloadLength <= 0)
-                {
-                    Debug.LogWarning($"인덱스 {i}에서 동기화 패턴은 일치했으나 비교할 페이로드가 없습니다. (추출된 페이로드 길이: {availableExtractedPayload}, 예상 페이로드 길이: {expectedPayloadLength})");
-                    // 동기화 패턴만 맞으면 성공으로 간주할지, 아니면 실패로 간주하고 계속 탐색할지 정책 결정 필요
-                    // 여기서는 페이로드 검증 실패로 보고 계속 탐색 (continue)
-                    continue; // 다음 i 로 넘어감
-                }
-
-                // 페이로드 비교 시작
-                bool isPayloadMatch = true;
-                int payloadMismatchCount = 0;
-                StringBuilder diffMarker = new StringBuilder(comparePayloadLength); // 오류 위치 표시용
-
-                for (int j = 0; j < comparePayloadLength; ++j)
-                {
-                    int extractedBit = extractedBits[payloadStartIndexInExtracted + j];
-                    // expectedFullPayloadWithHeader는 uint 리스트이므로 int로 캐스팅 필요
-                    uint expectedBitUint = expectedFullPayloadWithHeader[payloadStartIndexInExpected + j];
-                    int expectedBit = (int)expectedBitUint;
-
-                    if (extractedBit != expectedBit)
-                    {
-                        isPayloadMatch = false;
-                        payloadMismatchCount++;
-                        diffMarker.Append("^");
-                        // 많은 오류가 예상되면 여기서 break 하여 성능 향상 가능
-                        // if (payloadMismatchCount > 10) break; // 예: 10개 이상 틀리면 더 비교 안 함
+                        Debug.LogError($"[QF {currentProcessingQualityFactor}] 기준 페이로드가 길이 필드를 포함하기에 너무 짧습니다.");
+                        attackSummaryLogLines.Add($"QF {currentProcessingQualityFactor}: BER = 1.000000 (Expected payload too short) (Extracted: {extractedBits.Count})");
                     }
                     else
                     {
-                        diffMarker.Append(" ");
+                        int actualDataLengthInPayload = 0;
+                        for (int bitIdx = 0; bitIdx < LENGTH_FIELD_BITS; bitIdx++)
+                        {
+                            if (masterExpectedFullPayloadBits[expectedDataLenFieldStart + bitIdx] == 1)
+                            {
+                                actualDataLengthInPayload |= (1 << (LENGTH_FIELD_BITS - 1 - bitIdx));
+                            }
+                        }
+
+                        if (actualDataLengthInPayload == 0)
+                        {
+                            Debug.Log($"[QF {currentProcessingQualityFactor}] 기준 페이로드의 데이터 길이가 0입니다. BER = 0.0");
+                            attackSummaryLogLines.Add($"QF {currentProcessingQualityFactor}: BER = 0.000000 (No data to compare) (Extracted: {extractedBits.Count})");
+                        }
+                        else
+                        {
+                            int originalDataStartIndexInExpected = expectedDataLenFieldEnd;
+                            int extractedDataStartIndexFromSync = syncStartIndex + SYNC_PATTERN_LENGTH + LENGTH_FIELD_BITS;
+
+                            if ((originalDataStartIndexInExpected + actualDataLengthInPayload) > masterExpectedFullPayloadBits.Count ||
+                                (extractedDataStartIndexFromSync + actualDataLengthInPayload) > extractedBits.Count)
+                            {
+                                Debug.LogWarning($"[QF {currentProcessingQualityFactor}] BER 계산 시 데이터 세그먼트가 범위를 벗어납니다. BER = 1.0. ExpectedPayloadLen={masterExpectedFullPayloadBits.Count}, ExtractedLen={extractedBits.Count}, SyncStart={syncStartIndex}, ActualDataLen={actualDataLengthInPayload}");
+                                attackSummaryLogLines.Add($"QF {currentProcessingQualityFactor}: BER = 1.000000 (Data bounds error) (Extracted: {extractedBits.Count})");
+                            }
+                            else
+                            {
+                                int errors = 0;
+                                for (int k = 0; k < actualDataLengthInPayload; k++)
+                                {
+                                    if ((uint)extractedBits[extractedDataStartIndexFromSync + k] != masterExpectedFullPayloadBits[originalDataStartIndexInExpected + k])
+                                    {
+                                        errors++;
+                                    }
+                                }
+                                double ber = (actualDataLengthInPayload == 0) ? 0.0 : (double)errors / actualDataLengthInPayload;
+                                Debug.Log($"[QF {currentProcessingQualityFactor}] BER 계산됨: {ber:F6} ({errors} errors / {actualDataLengthInPayload} bits)");
+                                attackSummaryLogLines.Add($"QF {currentProcessingQualityFactor}: BER = {ber:F6} (Extracted: {extractedBits.Count})");
+                            }
+                        }
                     }
                 }
-
-                // 페이로드 검증 결과 확인
-                if (isPayloadMatch) // 페이로드까지 모두 일치!
-                {
-                    searchStopwatch.Stop(); // 탐색 시간 측정 종료
-                    Debug.Log($"<color=lime>인덱스 {i}에서 동기화 패턴 및 페이로드 ({comparePayloadLength}비트) 완전 일치 확인! 최종 성공.</color> (탐색 시간: {searchStopwatch.Elapsed.TotalMilliseconds:F2} ms)");
-                    return i; // 성공! 동기화 패턴이 시작된 인덱스(i) 반환
-                }
-                else // 동기화 패턴은 맞았으나 페이로드가 틀림 (False Positive)
-                {
-                    Debug.LogWarning($"인덱스 {i}에서 동기화 패턴은 일치했으나 페이로드가 불일치합니다 ({payloadMismatchCount}/{comparePayloadLength} 비트 다름). 계속 탐색...");
-                    int displayLength = Math.Min(comparePayloadLength, 120);
-                    Debug.Log($"페이로드 불일치 위치: {diffMarker.ToString().Substring(0, displayLength)}{(comparePayloadLength > displayLength ? "..." : "")}");
-                    // isSyncMatch는 여전히 true 상태이므로, 외부 루프는 다음 i로 진행됨
+                else
+                { // 동기화 실패
+                    Debug.LogWarning($"[QF {currentProcessingQualityFactor}] 추출된 비트에서 동기화 패턴을 찾지 못했습니다. BER = 1.0");
+                    attackSummaryLogLines.Add($"QF {currentProcessingQualityFactor}: BER = 1.000000 (Sync failed) (Extracted: {extractedBits.Count})");
                 }
             }
-            // else: isSyncMatch가 false이면 다음 i로 넘어감
-        } // end for i (탐색 루프)
-
-        // 루프를 다 돌았는데도 검증된 패턴을 찾지 못함
-        searchStopwatch.Stop();
-        Debug.LogError($"<color=orange>추출된 비트열 전체에서 유효한 동기화 패턴 + 페이로드를 찾지 못했습니다.</color> (탐색 시간: {searchStopwatch.Elapsed.TotalMilliseconds:F2} ms)");
-        return -1; // 최종 실패
+            stopwatch.Stop();
+            Debug.Log($"[QF {currentProcessingQualityFactor}] CPU 처리 시간 (추출+BER): {stopwatch.Elapsed.TotalMilliseconds:F2} ms.");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[QF {currentProcessingQualityFactor}] OnReadbackComplete 처리 중 예외 발생: {e.Message}\n{e.StackTrace}");
+            attackSummaryLogLines.Add($"QF {currentProcessingQualityFactor}: Exception - {e.Message}");
+        }
+        finally
+        {
+            isAsyncReadbackWaiting = false;
+        }
     }
 
+    // 픽셀 블록 추출 (NativeArray<float>에서 float[,,]으로)
+    private void ExtractPixelBlockFloat_CPU(NativeArray<float> pixelData, int imgWidth, int imgHeight, int blockXId, int blockYId,
+                                       float[,] blockR, float[,] blockG, float[,] blockB)
+    {
+        for (int y = 0; y < BLOCK_SIZE; ++y)
+        {
+            for (int x = 0; x < BLOCK_SIZE; ++x)
+            {
+                int px = blockXId * BLOCK_SIZE + x;
+                int py = blockYId * BLOCK_SIZE + y; // (0,0) is top-left (NativeArray는 보통 1D로 쭉 이어짐)
+                if (px < imgWidth && py < imgHeight)
+                {
+                    int baseIdx = (py * imgWidth + px) * 4; // RGBA 순서로 4 float 가정
+                    if (baseIdx + 2 < pixelData.Length)
+                    { // Ensure R, G, B are accessible
+                        blockR[y, x] = pixelData[baseIdx + 0];
+                        blockG[y, x] = pixelData[baseIdx + 1];
+                        blockB[y, x] = pixelData[baseIdx + 2];
+                    }
+                    else { blockR[y, x] = 0f; blockG[y, x] = 0f; blockB[y, x] = 0f; }
+                }
+                else { blockR[y, x] = 0f; blockG[y, x] = 0f; blockB[y, x] = 0f; }
+            }
+        }
+    }
 
-    // =============================================================
-    // --- CPU 기반 2D DCT 함수 ---
-    // =============================================================
+    // 지그재그 인덱스 반환 (사용자 기존 코드와 동일)
+    private Vector2Int[] GetZigzagIndices()
+    {
+        return new Vector2Int[] {
+            new Vector2Int(0,1),new Vector2Int(1,0),new Vector2Int(2,0),new Vector2Int(1,1),new Vector2Int(0,2),new Vector2Int(0,3),new Vector2Int(1,2),new Vector2Int(2,1),new Vector2Int(3,0),new Vector2Int(4,0),new Vector2Int(3,1),new Vector2Int(2,2),new Vector2Int(1,3),new Vector2Int(0,4),new Vector2Int(0,5),new Vector2Int(1,4),
+            new Vector2Int(2,3),new Vector2Int(3,2),new Vector2Int(4,1),new Vector2Int(5,0),new Vector2Int(6,0),new Vector2Int(5,1),new Vector2Int(4,2),new Vector2Int(3,3),new Vector2Int(2,4),new Vector2Int(1,5),new Vector2Int(0,6),new Vector2Int(0,7),new Vector2Int(1,6),new Vector2Int(2,5),new Vector2Int(3,4),new Vector2Int(4,3),
+            new Vector2Int(5,2),new Vector2Int(6,1),new Vector2Int(7,0),new Vector2Int(7,1),new Vector2Int(6,2),new Vector2Int(5,3),new Vector2Int(4,4),new Vector2Int(3,5),new Vector2Int(2,6),new Vector2Int(1,7),new Vector2Int(2,7),new Vector2Int(3,6),new Vector2Int(4,5),new Vector2Int(5,4),new Vector2Int(6,3),new Vector2Int(7,2),
+            new Vector2Int(7,3),new Vector2Int(6,4),new Vector2Int(5,5),new Vector2Int(4,6),new Vector2Int(3,7),new Vector2Int(4,7),new Vector2Int(5,6),new Vector2Int(6,5),new Vector2Int(7,4),new Vector2Int(7,5),new Vector2Int(6,6),new Vector2Int(5,7),new Vector2Int(6,7),new Vector2Int(7,6),new Vector2Int(7,7)
+        };
+    }
 
-    // 1D DCT (CPU, double precision) - HLSL의 DCT_1D_Single과 동일 로직
+    // CPU 기반 1D DCT (사용자 기존 코드와 동일)
     private void DCT1D_CPU(double[] input, double[] output)
     {
-        int N = input.Length;
-        if (N != BLOCK_SIZE || output.Length != BLOCK_SIZE)
-        {
-            Debug.LogError("DCT1D_CPU: Input/Output array size must be BLOCK_SIZE.");
-            return;
-        }
-        double pi_div_2N = MATH_PI / (2.0 * N); // 상수 미리 계산
-
+        int N = input.Length; double pi_div_2N = MATH_PI / (2.0 * N);
         for (int k = 0; k < N; ++k)
         {
-            double sum = 0.0;
-            double Ck = (k == 0) ? DCT_SQRT1_N : DCT_SQRT2_N; // 스케일링 상수
-
-            for (int n = 0; n < N; ++n)
-            {
-                // Math.Cos의 인자는 라디안
-                sum += input[n] * Math.Cos((2.0 * n + 1.0) * k * pi_div_2N);
-            }
+            double sum = 0.0; double Ck = (k == 0) ? DCT_SQRT1_N : DCT_SQRT2_N;
+            for (int n = 0; n < N; ++n) { sum += input[n] * Math.Cos((2.0 * n + 1.0) * k * pi_div_2N); }
             output[k] = Ck * sum;
         }
     }
-
-    // 2D DCT (CPU, double precision) - 입력은 float[,] 사용
-    // blockData: 입력 8x8 픽셀 블록 (float)
-    // dctCoeffs: 출력 8x8 DCT 계수 (double)
+    // CPU 기반 2D DCT (사용자 기존 코드와 동일)
     private void DCT2D_CPU(float[,] blockData, double[,] dctCoeffs)
     {
-        int rows = blockData.GetLength(0);
-        int cols = blockData.GetLength(1);
-        if (rows != BLOCK_SIZE || cols != BLOCK_SIZE || dctCoeffs.GetLength(0) != BLOCK_SIZE || dctCoeffs.GetLength(1) != BLOCK_SIZE)
+        double[] tempRowInput = new double[BLOCK_SIZE]; double[] tempRowOutput = new double[BLOCK_SIZE];
+        double[,] tempBuffer = new double[BLOCK_SIZE, BLOCK_SIZE];
+        for (int i = 0; i < BLOCK_SIZE; ++i)
         {
-            Debug.LogError("DCT2D_CPU: Input/Output array dimensions must be BLOCK_SIZE x BLOCK_SIZE.");
-            return;
-        }
-
-        // 임시 배열 (double 사용)
-        double[] tempRowInput = new double[BLOCK_SIZE];
-        double[] tempRowOutput = new double[BLOCK_SIZE];
-        double[,] tempBuffer = new double[BLOCK_SIZE, BLOCK_SIZE]; // 행 DCT 결과 저장용
-
-        // 1단계: 행(Row) 방향 1D DCT 수행
-        for (int i = 0; i < BLOCK_SIZE; ++i) // 각 행에 대해
-        {
-            // 현재 행 데이터를 double 배열로 복사
             for (int j = 0; j < BLOCK_SIZE; ++j) { tempRowInput[j] = (double)blockData[i, j]; }
-            // 1D DCT 수행
             DCT1D_CPU(tempRowInput, tempRowOutput);
-            // 결과를 임시 버퍼에 저장
             for (int j = 0; j < BLOCK_SIZE; ++j) { tempBuffer[i, j] = tempRowOutput[j]; }
         }
-
-        // 임시 배열 (double 사용)
-        double[] tempColInput = new double[BLOCK_SIZE];
-        double[] tempColOutput = new double[BLOCK_SIZE];
-
-        // 2단계: 열(Column) 방향 1D DCT 수행
-        for (int j = 0; j < BLOCK_SIZE; ++j) // 각 열에 대해
+        double[] tempColInput = new double[BLOCK_SIZE]; double[] tempColOutput = new double[BLOCK_SIZE];
+        for (int j = 0; j < BLOCK_SIZE; ++j)
         {
-            // 임시 버퍼에서 현재 열 데이터를 double 배열로 복사
             for (int i = 0; i < BLOCK_SIZE; ++i) { tempColInput[i] = tempBuffer[i, j]; }
-            // 1D DCT 수행
             DCT1D_CPU(tempColInput, tempColOutput);
-            // 최종 결과를 출력 배열 dctCoeffs에 저장 (v, u 순서 = i, j 순서)
             for (int i = 0; i < BLOCK_SIZE; ++i) { dctCoeffs[i, j] = tempColOutput[i]; }
         }
     }
 
+    // CPU에서 패턴 버퍼 생성 (이전 답변의 C# 버전과 동일)
+    private float[] GeneratePatternBufferCPU(int totalBlocks, int coeffsPerBlock, string seedKey)
+    {
+        if (totalBlocks <= 0 || coeffsPerBlock <= 0) return new float[0];
+        int seedIntValue = 0; if (!string.IsNullOrEmpty(seedKey)) seedIntValue = seedKey.GetHashCode();
+        System.Random rng = new System.Random(seedIntValue);
+        int bufferSize = totalBlocks * coeffsPerBlock;
+        float[] buffer = new float[bufferSize];
+        for (int i = 0; i < bufferSize; i++) { buffer[i] = (rng.NextDouble() < 0.5) ? -1.0f : 1.0f; }
+        return buffer;
+    }
 
+    // GraphicsFormat의 픽셀당 바이트 수 결정 (수동 switch)
+    private int GetFormatBytesPerPixel(GraphicsFormat format)
+    {
+        switch (format)
+        { // 주요 포맷들, 필요시 추가
+            case GraphicsFormat.R8_UNorm: case GraphicsFormat.R8_SNorm: case GraphicsFormat.R8_UInt: case GraphicsFormat.R8_SInt: return 1;
+            case GraphicsFormat.R8G8_UNorm: case GraphicsFormat.R8G8_SNorm: case GraphicsFormat.R8G8_UInt: case GraphicsFormat.R8G8_SInt: case GraphicsFormat.R16_UNorm: case GraphicsFormat.R16_SNorm: case GraphicsFormat.R16_UInt: case GraphicsFormat.R16_SInt: case GraphicsFormat.R16_SFloat: return 2;
+            case GraphicsFormat.R8G8B8_UNorm: case GraphicsFormat.R8G8B8_SRGB: case GraphicsFormat.B8G8R8_UNorm: case GraphicsFormat.B8G8R8_SRGB: return 3; // 24bpp
+            case GraphicsFormat.R8G8B8A8_UNorm: case GraphicsFormat.R8G8B8A8_SRGB: case GraphicsFormat.B8G8R8A8_UNorm: case GraphicsFormat.B8G8R8A8_SRGB: case GraphicsFormat.R16G16_UNorm: case GraphicsFormat.R16G16_SFloat: case GraphicsFormat.R32_UInt: case GraphicsFormat.R32_SInt: case GraphicsFormat.R32_SFloat: return 4;
+            case GraphicsFormat.R16G16B16A16_UNorm: case GraphicsFormat.R16G16B16A16_SFloat: case GraphicsFormat.R32G32_UInt: case GraphicsFormat.R32G32_SInt: case GraphicsFormat.R32G32_SFloat: return 8;
+            case GraphicsFormat.R32G32B32_UInt: case GraphicsFormat.R32G32B32_SInt: case GraphicsFormat.R32G32B32_SFloat: return 12;
+            case GraphicsFormat.R32G32B32A32_UInt: case GraphicsFormat.R32G32B32A32_SInt: case GraphicsFormat.R32G32B32A32_SFloat: return 16;
+            default: Debug.LogWarning($"GetFormatBytesPerPixel: Unhandled GraphicsFormat {format}. Returning 0."); return 0;
+        }
+    }
 
+    // 동기화 패턴 탐색 (사용자 기존 함수와 거의 동일, List<uint> expected, int[] syncPattern 사용)
+    private int FindValidatedWatermarkStartIndex_Internal(List<int> extractedBits, List<uint> expectedFullPayload, int[] syncPattern)
+    {
+        int syncPatternLength = syncPattern.Length;
+        if (extractedBits == null || expectedFullPayload == null || syncPattern == null || syncPatternLength == 0 || extractedBits.Count < syncPatternLength || expectedFullPayload.Count < syncPatternLength)
+        {
+            // Debug.LogWarning("[FindValidatedWatermarkStartIndex_Internal] Invalid input data or lengths.");
+            return -1;
+        }
 
-    // 클래스 종료
+        for (int i = 0; i <= extractedBits.Count - syncPatternLength; i++)
+        {
+            bool syncMatch = true;
+            for (int kSync = 0; kSync < syncPatternLength; kSync++)
+            {
+                if (extractedBits[i + kSync] != syncPattern[kSync])
+                {
+                    syncMatch = false; break;
+                }
+            }
+            if (!syncMatch) continue;
+
+            // 동기화 패턴 일치, 이제 전체 페이로드(expectedFullPayload의 시작 부분)와 비교
+            int payloadStartInExtracted = i + syncPatternLength;
+            if (payloadStartInExtracted + LENGTH_FIELD_BITS > extractedBits.Count) continue; // 길이 필드 읽을 수 있는지 확인
+
+            int actualDataLenFromExtractedHeader = 0;
+            for (int bitIdx = 0; bitIdx < LENGTH_FIELD_BITS; bitIdx++)
+            {
+                if (extractedBits[payloadStartInExtracted + bitIdx] == 1)
+                {
+                    actualDataLenFromExtractedHeader |= (1 << (LENGTH_FIELD_BITS - 1 - bitIdx));
+                }
+            }
+
+            int totalLengthToCompareInExpected = syncPatternLength + LENGTH_FIELD_BITS + actualDataLenFromExtractedHeader;
+
+            if (expectedFullPayload.Count < totalLengthToCompareInExpected || i + totalLengthToCompareInExpected > extractedBits.Count)
+            {
+                continue; // 비교할 만큼 충분한 비트가 없는 경우
+            }
+
+            bool fullMatch = true;
+            // expectedFullPayload의 앞부분(동기화패턴+길이필드+데이터)과 extractedBits의 현재 위치부터를 비교
+            for (int k = 0; k < totalLengthToCompareInExpected; k++)
+            {
+                if (extractedBits[i + k] != (int)expectedFullPayload[k])
+                { // expected는 uint, extracted는 int
+                    fullMatch = false; break;
+                }
+            }
+            if (fullMatch)
+            {
+                Debug.Log($"<color=lime>검증된 워터마크 시작 인덱스 {i} 발견 (추출된 비트열 기준).</color>");
+                return i;
+            }
+        }
+        // Debug.LogWarning("<color=orange>검증된 워터마크를 찾지 못했습니다.</color>");
+        return -1;
+    }
 }
+
+// 사용자 프로젝트의 DataManager 클래스 (실제 구현 필요)
+// 예시: public static class DataManager { public static byte[] EncryptedOriginData { get; set; } }

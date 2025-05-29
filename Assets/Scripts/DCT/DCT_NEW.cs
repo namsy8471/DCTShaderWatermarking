@@ -21,6 +21,13 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
     [Range(1, 63)]
     public int coefficientsToUse = 10; // RGB 동시 적용 시 개수 줄이는 것 고려
 
+    private float lastTime;
+    private float interval;
+    
+    [Range(0, 1)]
+    public float displayDuration = 0.02f;
+    private bool isWatermarkActive = false;
+
     private DCT_RGB_SS_RenderPass ssRgbDctRenderPass;
 
     // HLSL 파일에 정의된 커널 이름들
@@ -39,6 +46,9 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
 
         try
         {
+            interval = 1.0f - displayDuration;
+            lastTime = Time.time - interval;
+
             ssRgbDctRenderPass = new DCT_RGB_SS_RenderPass(
                 ssRgbDctComputeShader, name, embedBitstream,
                 embeddingStrength, secretKey, coefficientsToUse,
@@ -61,9 +71,34 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
 
         if (ssRgbDctComputeShader != null && ssRgbDctRenderPass != null && DataManager.IsDataReady)
         {
-            ssRgbDctRenderPass.SetEmbedActive(embedBitstream);
-            ssRgbDctRenderPass.UpdateSSParams(embeddingStrength, secretKey, coefficientsToUse);
-            renderer.EnqueuePass(ssRgbDctRenderPass);
+            if (!isWatermarkActive || displayDuration == 0)
+            {
+                Debug.Log("워터마킹 비작동" + interval + " 초 동안");
+
+                if (Time.time - lastTime >= interval)
+                {
+                    isWatermarkActive = true;  // ✅ 워터마킹 활성화
+                    lastTime = Time.time;
+
+                    return;
+                }
+            }
+
+            else
+            {
+                if (Time.time - lastTime >= displayDuration && displayDuration != 1)
+                {
+                    isWatermarkActive = false;
+                    lastTime = Time.time;
+                    return;
+                }
+
+                Debug.Log("워터마킹 작동" + displayDuration + " 초 동안");
+
+                ssRgbDctRenderPass.SetEmbedActive(embedBitstream);
+                ssRgbDctRenderPass.UpdateSSParams(embeddingStrength, secretKey, coefficientsToUse);
+                renderer.EnqueuePass(ssRgbDctRenderPass);
+            }
         }
     }
 
@@ -197,6 +232,7 @@ public class DCT_RGB_SS_RenderFeature : ScriptableRendererFeature
             var desc = renderingData.cameraData.cameraTargetDescriptor;
             desc.depthBufferBits = 0;
             desc.msaaSamples = 1;
+            desc.sRGB = false;
 
             int width = desc.width;
             int height = desc.height;

@@ -24,11 +24,11 @@ public class OriginBlock
     [JsonProperty] private string unityProjectID = ""; // 에디터에서만 채워짐
 
     // --- 동기화 및 프레이밍 상수 ---
-    private const int SYNC_PATTERN_LENGTH = 64; // 동기화 패턴 길이 (비트 수)
-    private const int LENGTH_FIELD_BITS = 16;  // 데이터 길이를 나타낼 비트 수 (최대 65535 비트 길이 지원)
+    public static readonly int SYNC_PATTERN_LENGTH = 64; // 동기화 패턴 길이 (비트 수)
+    public static readonly int LENGTH_FIELD_BITS = 16;  // 데이터 길이를 나타낼 비트 수 (최대 65535 비트 길이 지원)
 
     // --- 64비트 동기화 패턴 정의 (예시 값, 실제로는 더 랜덤하고 고유한 패턴 사용 권장) ---
-    private static readonly List<uint> syncPattern = new List<uint> {
+    public static readonly List<uint> syncPattern = new List<uint> {
         1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, // 16
         1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, // 32
         0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, // 48

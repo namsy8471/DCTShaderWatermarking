@@ -1,28 +1,37 @@
-using UnityEngine;
+ï»¿using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using System.Collections.Generic;
 using System.Linq;
 using System;
 using Unity.Collections;
-using System.IO; // Math.Min »ç¿ë
+using System.IO;
+using UnityEngine.Experimental.Rendering; // Math.Min ì‚¬ìš©
 
-// OriginBlock Å¬·¡½º°¡ µ¿ÀÏ ÇÁ·ÎÁ§Æ® ³»¿¡ Á¤ÀÇµÇ¾î ÀÖ´Ù°í °¡Á¤
+// OriginBlock í´ë˜ìŠ¤ê°€ ë™ì¼ í”„ë¡œì íŠ¸ ë‚´ì— ì •ì˜ë˜ì–´ ìˆë‹¤ê³  ê°€ì •
 
 public class LSBRenderFeature : ScriptableRendererFeature
 {
-    [Header("¼ÎÀÌ´õ ¹× ¼³Á¤")]
+    [Header("ì…°ì´ë” ë° ì„¤ì •")]
     public ComputeShader lsbComputeShader;
-    [Tooltip("Spatial LSB ¹æ½ÄÀ¸·Î ºñÆ®½ºÆ®¸²À» ÀÓº£µùÇÒÁö ¿©ºÎ")]
+    [Tooltip("Spatial LSB ë°©ì‹ìœ¼ë¡œ ë¹„íŠ¸ìŠ¤íŠ¸ë¦¼ì„ ì„ë² ë”©í• ì§€ ì—¬ë¶€")]
     public bool embedBitstream = true;
-    [Tooltip("Addressables¿¡¼­ ·ÎµåÇÒ ¾ÏÈ£È­µÈ µ¥ÀÌÅÍ Å°")]
+    [Tooltip("Addressablesì—ì„œ ë¡œë“œí•  ì•”í˜¸í™”ëœ ë°ì´í„° í‚¤")]
     public string addressableKey = "OriginBlockData";
+
+    private float lastTime;
+    private float interval;
+    public float displayDuration = 0.02f;
+    private bool isWatermarkActive = false;
 
     private LSBRenderPass lsbRenderPass;
 
     public override void Create()
     {
-        if (lsbComputeShader == null) { /* ¿À·ù Ã³¸® */ return; }
+        if (lsbComputeShader == null) { /* ì˜¤ë¥˜ ì²˜ë¦¬ */ return; }
+
+        interval = 1.0f - displayDuration;
+        lastTime = Time.time - interval;
 
         lsbRenderPass = new LSBRenderPass(lsbComputeShader, name, embedBitstream);
         lsbRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
@@ -31,18 +40,44 @@ public class LSBRenderFeature : ScriptableRendererFeature
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
         var camera = renderingData.cameraData.camera;
-        if (camera.cameraType != CameraType.Game) { return; } // °ÔÀÓ Ä«¸Ş¶ó°¡ ¾Æ´Ò °æ¿ì ÆĞ½º
+        if (camera.cameraType != CameraType.Game) { return; } // ê²Œì„ ì¹´ë©”ë¼ê°€ ì•„ë‹ ê²½ìš° íŒ¨ìŠ¤
 
         if (lsbComputeShader != null && lsbRenderPass != null && DataManager.IsDataReady)
         {
-            lsbRenderPass.SetEmbedActive(embedBitstream);
-            renderer.EnqueuePass(lsbRenderPass);
+            if (!isWatermarkActive && displayDuration == 0)
+            {
+                Debug.Log("ì›Œí„°ë§ˆí‚¹ ë¹„ì‘ë™" + interval + " ì´ˆ ë™ì•ˆ");
+
+                if (Time.time - lastTime >= interval)
+                {
+                    isWatermarkActive = true;  // âœ… ì›Œí„°ë§ˆí‚¹ í™œì„±í™”
+                    lastTime = Time.time;
+
+                    return;
+                }
+            }
+
+            else
+            {
+                if (Time.time - lastTime >= displayDuration && displayDuration != 1)
+                {
+                    isWatermarkActive = false;
+                    lastTime = Time.time;
+                    return;
+                }
+
+                Debug.Log("ì›Œí„°ë§ˆí‚¹ ì‘ë™" + displayDuration + " ì´ˆ ë™ì•ˆ");
+
+                lsbRenderPass.SetEmbedActive(embedBitstream);
+                renderer.EnqueuePass(lsbRenderPass);
+            }
+                
         }
     }
 
     protected override void Dispose(bool disposing) { lsbRenderPass?.Cleanup(); }
 
-    // --- LSB Render Pass ³»ºÎ Å¬·¡½º ---
+    // --- LSB Render Pass ë‚´ë¶€ í´ë˜ìŠ¤ ---
     class LSBRenderPass : ScriptableRenderPass
     {
         private ComputeShader computeShader;
@@ -51,8 +86,8 @@ public class LSBRenderFeature : ScriptableRendererFeature
         private string profilerTag;
         private bool embedActive;
         private ComputeBuffer bitstreamBuffer;
-        private List<uint> payloadBits; // Çì´õ Æ÷ÇÔ, ÆĞµù Àü ¿øº» ÆäÀÌ·Îµå
-        private List<uint> finalBitsToEmbed; // ÃÖÁ¾ »ğÀÔµÉ ºñÆ® (ÆĞµù ¿Ï·á)
+        private List<uint> payloadBits; // í—¤ë” í¬í•¨, íŒ¨ë”© ì „ ì›ë³¸ í˜ì´ë¡œë“œ
+        private List<uint> finalBitsToEmbed; // ìµœì¢… ì‚½ì…ë  ë¹„íŠ¸ (íŒ¨ë”© ì™„ë£Œ)
 
         private const int THREAD_GROUP_SIZE_X = 8;
         private const int THREAD_GROUP_SIZE_Y = 8;
@@ -61,10 +96,10 @@ public class LSBRenderFeature : ScriptableRendererFeature
         {
             computeShader = shader; profilerTag = tag; embedActive = initialEmbedState;
             kernelID = computeShader.FindKernel("LSBEmbedKernel");
-            if (kernelID < 0) Debug.LogError("Kernel LSBEmbedKernel Ã£±â ½ÇÆĞ");
+            if (kernelID < 0) Debug.LogError("Kernel LSBEmbedKernel ì°¾ê¸° ì‹¤íŒ¨");
 
-            // ÃÊ±â ÆäÀÌ·Îµå ±¸¼º (Çì´õ+µ¥ÀÌÅÍ)
-            payloadBits = new List<uint>(); // ÃÊ±âÈ­
+            // ì´ˆê¸° í˜ì´ë¡œë“œ êµ¬ì„± (í—¤ë”+ë°ì´í„°)
+            payloadBits = new List<uint>(); // ì´ˆê¸°í™”
             finalBitsToEmbed = new List<uint>();
         }
 
@@ -91,7 +126,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError($"[LSBRenderPass] ComputeBuffer »ı¼º ½ÇÆĞ: {ex.Message}");
+                    Debug.LogError($"[LSBRenderPass] ComputeBuffer ìƒì„± ì‹¤íŒ¨: {ex.Message}");
                     bitstreamBuffer = null;
                     return;
                 }
@@ -99,7 +134,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
             if(count == height * width)
             {
-                Debug.LogWarning($"[LSBRenderPass] ºñÆ®½ºÆ®¸² Å©±â ÀÏÄ¡: {count} == {height * width}");
+                Debug.LogWarning($"[LSBRenderPass] ë¹„íŠ¸ìŠ¤íŠ¸ë¦¼ í¬ê¸° ì¼ì¹˜: {count} == {height * width}");
                 return;
             }
 
@@ -109,7 +144,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[LSBRenderPass] ComputeBuffer SetData ¿À·ù: {ex.Message}");
+                Debug.LogError($"[LSBRenderPass] ComputeBuffer SetData ì˜¤ë¥˜: {ex.Message}");
                 bitstreamBuffer?.Release();
                 bitstreamBuffer = null;
             }
@@ -120,15 +155,18 @@ public class LSBRenderFeature : ScriptableRendererFeature
             var desc = renderingData.cameraData.cameraTargetDescriptor;
             desc.depthBufferBits = 0; 
             desc.msaaSamples = 1;
-            //desc.sRGB = false; // sRGB ºñÈ°¼ºÈ­
+            desc.colorFormat = RenderTextureFormat.ARGB32;
+            desc.sRGB = false;
 
             var outputDesc = desc;
             outputDesc.enableRandomWrite = true;
+            outputDesc.colorFormat = RenderTextureFormat.ARGB32;
+            outputDesc.sRGB = false;
 
             RenderingUtils.ReAllocateIfNeeded(ref sourceTextureHandle, desc, FilterMode.Point, TextureWrapMode.Clamp, name: "_SourceCopyForLSB");
             RenderingUtils.ReAllocateIfNeeded(ref outputTextureHandle, outputDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "_LSBOutput");
 
-            // ÃÖÁ¾ »ğÀÔµÉ ºñÆ® ¸®½ºÆ® ÃÊ±âÈ­
+            // ìµœì¢… ì‚½ì…ë  ë¹„íŠ¸ ë¦¬ìŠ¤íŠ¸ ì´ˆê¸°í™”
 
             int width = desc.width;
             int height = desc.height;
@@ -136,80 +174,80 @@ public class LSBRenderFeature : ScriptableRendererFeature
 
             if (finalBitsToEmbed.Count != availableCapacity)
             {
-                finalBitsToEmbed = finalBitsToEmbed ?? new List<uint>(); // NullÀÌ¸é »õ·Î »ı¼º
+                finalBitsToEmbed = finalBitsToEmbed ?? new List<uint>(); // Nullì´ë©´ ìƒˆë¡œ ìƒì„±
                 finalBitsToEmbed.Clear();
 
-                // embedActive ÇÃ·¡±×°¡ È°¼ºÈ­ µÇ¾î ÀÖ°í, DataManager¸¦ ÅëÇØ µ¥ÀÌÅÍ ·ÎµùÀÌ ¿Ï·áµÇ¾ú´ÂÁö È®ÀÎ
+                // embedActive í”Œë˜ê·¸ê°€ í™œì„±í™” ë˜ì–´ ìˆê³ , DataManagerë¥¼ í†µí•´ ë°ì´í„° ë¡œë”©ì´ ì™„ë£Œë˜ì—ˆëŠ”ì§€ í™•ì¸
                 if (embedActive && DataManager.IsDataReady && DataManager.EncryptedOriginData != null)
                 {
-                    // µ¥ÀÌÅÍ°¡ ÁØºñµÇ¾úÀ¸¹Ç·Î ÆäÀÌ·Îµå ±¸¼º ¹× ÆĞµù ½Ãµµ
+                    // ë°ì´í„°ê°€ ì¤€ë¹„ë˜ì—ˆìœ¼ë¯€ë¡œ í˜ì´ë¡œë“œ êµ¬ì„± ë° íŒ¨ë”© ì‹œë„
                     try
                     {
-                        // 1. DataManager¿¡¼­ Á÷Á¢ ¿øº» ÆäÀÌ·Îµå ±¸¼º
+                        // 1. DataManagerì—ì„œ ì§ì ‘ ì›ë³¸ í˜ì´ë¡œë“œ êµ¬ì„±
                         List<uint> currentPayload = OriginBlock.ConstructPayloadWithHeader(DataManager.EncryptedOriginData);
 
-                        // 2. ±¸¼º °á°ú È®ÀÎ
+                        // 2. êµ¬ì„± ê²°ê³¼ í™•ì¸
                         if (currentPayload == null || currentPayload.Count == 0)
                         {
-                            Debug.LogWarning("[DCTRenderPass] ¿øº» ÆäÀÌ·Îµå ±¸¼º ½ÇÆĞ ¶Ç´Â µ¥ÀÌÅÍ ¾øÀ½.");
-                            // finalBitsToEmbed´Â ÀÌ¹Ì Clear()µÈ »óÅÂÀÌ¹Ç·Î ´õ ÇÒ °Í ¾øÀ½
+                            Debug.LogWarning("[DCTRenderPass] ì›ë³¸ í˜ì´ë¡œë“œ êµ¬ì„± ì‹¤íŒ¨ ë˜ëŠ” ë°ì´í„° ì—†ìŒ.");
+                            // finalBitsToEmbedëŠ” ì´ë¯¸ Clear()ëœ ìƒíƒœì´ë¯€ë¡œ ë” í•  ê²ƒ ì—†ìŒ
                         }
                         else
                         {
-                            // 3. ÆĞµù ·ÎÁ÷ ¼öÇà (currentPayload¸¦ ¿øº»À¸·Î »ç¿ë)
+                            // 3. íŒ¨ë”© ë¡œì§ ìˆ˜í–‰ (currentPayloadë¥¼ ì›ë³¸ìœ¼ë¡œ ì‚¬ìš©)
 
-                            int totalPayloadLength = currentPayload.Count; // <- currentPayload »ç¿ë
+                            int totalPayloadLength = currentPayload.Count; // <- currentPayload ì‚¬ìš©
 
                             if (availableCapacity == 0)
                             {
-                                Debug.LogWarning("[DCTRenderPass] ÀÌ¹ÌÁö Å©±â°¡ ÀÛ¾Æ ºí·Ï »ı¼º ºÒ°¡.");
+                                Debug.LogWarning("[DCTRenderPass] ì´ë¯¸ì§€ í¬ê¸°ê°€ ì‘ì•„ ë¸”ë¡ ìƒì„± ë¶ˆê°€.");
                             }
                             else
                             {
-                                finalBitsToEmbed.Clear(); // ÆĞµù Àü¿¡ È®½ÇÈ÷ ºñ¿ì±â
+                                finalBitsToEmbed.Clear(); // íŒ¨ë”© ì „ì— í™•ì‹¤íˆ ë¹„ìš°ê¸°
                                 finalBitsToEmbed.Capacity = availableCapacity;
                                 int currentPosition = 0;
                                 while (currentPosition < availableCapacity)
                                 {
                                     int remainingSpace = availableCapacity - currentPosition;
                                     int countToAdd = Math.Min(totalPayloadLength, remainingSpace);
-                                    if (countToAdd <= 0) break; // totalPayloadLength°¡ 0ÀÎ °æ¿ì Æ÷ÇÔ
-                                    finalBitsToEmbed.AddRange(currentPayload.GetRange(0, countToAdd)); // <- currentPayload »ç¿ë
+                                    if (countToAdd <= 0) break; // totalPayloadLengthê°€ 0ì¸ ê²½ìš° í¬í•¨
+                                    finalBitsToEmbed.AddRange(currentPayload.GetRange(0, countToAdd)); // <- currentPayload ì‚¬ìš©
                                     currentPosition += countToAdd;
                                 }
-                                // Debug.Log($"[DCTRenderPass] ÆĞµù ¿Ï·á. ÃÖÁ¾ Å©±â: {finalBitsToEmbed.Count}");
+                                // Debug.Log($"[DCTRenderPass] íŒ¨ë”© ì™„ë£Œ. ìµœì¢… í¬ê¸°: {finalBitsToEmbed.Count}");
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        Debug.LogError($"[{profilerTag}] ÆäÀÌ·Îµå ±¸¼º ¶Ç´Â ÆĞµù Áß ¿À·ù: {ex.Message}");
-                        finalBitsToEmbed.Clear(); // ¿À·ù ½Ã ºñ¿ò
+                        Debug.LogError($"[{profilerTag}] í˜ì´ë¡œë“œ êµ¬ì„± ë˜ëŠ” íŒ¨ë”© ì¤‘ ì˜¤ë¥˜: {ex.Message}");
+                        finalBitsToEmbed.Clear(); // ì˜¤ë¥˜ ì‹œ ë¹„ì›€
                     }
                 }
-                // <<< º¯°æ/Ãß°¡µÈ ºÎºĞ ³¡ >>>
+                // <<< ë³€ê²½/ì¶”ê°€ëœ ë¶€ë¶„ ë >>>
                 else
                 {
-                    // ÀÓº£µù ºñÈ°¼ºÈ­ ¶Ç´Â µ¥ÀÌÅÍ ¹ÌÁØºñ »óÅÂ
-                    // finalBitsToEmbed´Â ÀÌ¹Ì ºñ¾îÀÖÀ¸¹Ç·Î Ãß°¡ ÀÛ¾÷ ¾øÀ½
+                    // ì„ë² ë”© ë¹„í™œì„±í™” ë˜ëŠ” ë°ì´í„° ë¯¸ì¤€ë¹„ ìƒíƒœ
+                    // finalBitsToEmbedëŠ” ì´ë¯¸ ë¹„ì–´ìˆìœ¼ë¯€ë¡œ ì¶”ê°€ ì‘ì—… ì—†ìŒ
                     if (!DataManager.IsDataReady && embedActive)
                     {
-                        // µ¥ÀÌÅÍ ·ÎµùÀÌ ¾ÆÁ÷ ¾È ³¡³µÀ» ¼ö ÀÖÀ½ (°æ°í ·Î±ëÀº ¼±ÅÃ»çÇ×)
-                        Debug.LogWarning("[LSBRenderPass] µ¥ÀÌÅÍ°¡ ¾ÆÁ÷ ÁØºñµÇÁö ¾Ê¾Æ ÀÓº£µùÀ» °Ç³Ê<0xEB><0x91>´Ï´Ù.");
+                        // ë°ì´í„° ë¡œë”©ì´ ì•„ì§ ì•ˆ ëë‚¬ì„ ìˆ˜ ìˆìŒ (ê²½ê³  ë¡œê¹…ì€ ì„ íƒì‚¬í•­)
+                        Debug.LogWarning("[LSBRenderPass] ë°ì´í„°ê°€ ì•„ì§ ì¤€ë¹„ë˜ì§€ ì•Šì•„ ì„ë² ë”©ì„ ê±´ë„ˆ<0xEB><0x91>ë‹ˆë‹¤.");
                     }
                 }
 
-                // ÃÖÁ¾ ºñÆ®½ºÆ®¸²À¸·Î ComputeBuffer ¾÷µ¥ÀÌÆ® (µ¥ÀÌÅÍ ¾øÀ¸¸é ¹öÆÛ ÇØÁ¦µÊ)
+                // ìµœì¢… ë¹„íŠ¸ìŠ¤íŠ¸ë¦¼ìœ¼ë¡œ ComputeBuffer ì—…ë°ì´íŠ¸ (ë°ì´í„° ì—†ìœ¼ë©´ ë²„í¼ í•´ì œë¨)
                 UpdateBitstreamBuffer(finalBitsToEmbed, width, height);
             }
 
-            // --- ¼ÎÀÌ´õ ÆÄ¶ó¹ÌÅÍ ¼³Á¤ ---
+            // --- ì…°ì´ë” íŒŒë¼ë¯¸í„° ì„¤ì • ---
             if (kernelID >= 0)
             {
-                int currentBitLength = finalBitsToEmbed.Count; // ½ÇÁ¦ ¹öÆÛ¿¡ µé¾î°¥/µé¾î°£ ºñÆ® ¼ö
-                                                               // ComputeBuffer°¡ ¾÷µ¥ÀÌÆ® µÈ ÈÄ À¯È¿¼º ÀçÈ®ÀÎ
+                int currentBitLength = finalBitsToEmbed.Count; // ì‹¤ì œ ë²„í¼ì— ë“¤ì–´ê°ˆ/ë“¤ì–´ê°„ ë¹„íŠ¸ ìˆ˜
+                                                               // ComputeBufferê°€ ì—…ë°ì´íŠ¸ ëœ í›„ ìœ íš¨ì„± ì¬í™•ì¸
                 bool bufferValid = bitstreamBuffer != null && bitstreamBuffer.IsValid() && bitstreamBuffer.count == currentBitLength;
-                // ÃÖÁ¾ÀûÀ¸·Î ¼ÎÀÌ´õ¿¡¼­ ÀÓº£µùÀ» ¼öÇàÇÒÁö ¿©ºÎ °áÁ¤
+                // ìµœì¢…ì ìœ¼ë¡œ ì…°ì´ë”ì—ì„œ ì„ë² ë”©ì„ ìˆ˜í–‰í• ì§€ ì—¬ë¶€ ê²°ì •
                 bool shouldEmbed = embedActive && DataManager.IsDataReady && bufferValid && currentBitLength > 0;
 
                 cmd.SetComputeTextureParam(computeShader, kernelID, "Source", sourceTextureHandle);
@@ -217,12 +255,12 @@ public class LSBRenderFeature : ScriptableRendererFeature
                 cmd.SetComputeIntParam(computeShader, "Width", width);
                 cmd.SetComputeIntParam(computeShader, "Height", height);
 
-                // Bitstream ¹öÆÛ ¼³Á¤Àº À¯È¿ÇÒ ¶§¸¸ (shouldEmbed Á¶°Ç ´ë½Å bufferValid »ç¿ë)
-                if (bufferValid && currentBitLength > 0) // ¹öÆÛ°¡ ½ÇÁ¦·Î À¯È¿ÇÒ ¶§¸¸ ¹ÙÀÎµù ½Ãµµ
+                // Bitstream ë²„í¼ ì„¤ì •ì€ ìœ íš¨í•  ë•Œë§Œ (shouldEmbed ì¡°ê±´ ëŒ€ì‹  bufferValid ì‚¬ìš©)
+                if (bufferValid && currentBitLength > 0) // ë²„í¼ê°€ ì‹¤ì œë¡œ ìœ íš¨í•  ë•Œë§Œ ë°”ì¸ë”© ì‹œë„
                 {
                     cmd.SetComputeBufferParam(computeShader, kernelID, "Bitstream", bitstreamBuffer);
                 }
-                // Embed °ü·Ã ÆÄ¶ó¹ÌÅÍ´Â Ç×»ó ¼³Á¤ (¼ÎÀÌ´õ°¡ Embed °ª º¸°í Ã³¸®ÇÏµµ·Ï)
+                // Embed ê´€ë ¨ íŒŒë¼ë¯¸í„°ëŠ” í•­ìƒ ì„¤ì • (ì…°ì´ë”ê°€ Embed ê°’ ë³´ê³  ì²˜ë¦¬í•˜ë„ë¡)
                 cmd.SetComputeIntParam(computeShader, "BitLength", shouldEmbed ? currentBitLength : 0);
                 cmd.SetComputeIntParam(computeShader, "Embed", shouldEmbed ? 1 : 0);
             }
@@ -234,8 +272,8 @@ public class LSBRenderFeature : ScriptableRendererFeature
             // Optional: Check buffer validity again if needed
             if (embedActive && (bitstreamBuffer == null || !bitstreamBuffer.IsValid()) || !DataManager.IsDataReady)
             {
-                Debug.LogWarning("[LSBRenderPass] Embed È°¼ºÈ­ »óÅÂÀÌ³ª ComputeBuffer À¯È¿ÇÏÁö ¾ÊÀ½. È¤Àº µ¥ÀÌÅÍ°¡ ·Îµù µÇÁö ¾ÊÀ½");
-                return; // ¼±ÅÃÀû: ½ÇÇà Áß´Ü
+                Debug.LogWarning("[LSBRenderPass] Embed í™œì„±í™” ìƒíƒœì´ë‚˜ ComputeBuffer ìœ íš¨í•˜ì§€ ì•ŠìŒ. í˜¹ì€ ë°ì´í„°ê°€ ë¡œë”© ë˜ì§€ ì•ŠìŒ");
+                return; // ì„ íƒì : ì‹¤í–‰ ì¤‘ë‹¨
             }
 
 
@@ -245,18 +283,18 @@ public class LSBRenderFeature : ScriptableRendererFeature
             int height = cameraTarget.rt.height;
 
             cmd.CopyTexture(cameraTarget, sourceTextureHandle); // Copy source
-            RTResultHolder.DedicatedSaveTargetBeforeEmbedding = sourceTextureHandle; // ¿øº» º¹»çº» ÀúÀå;
+            RTResultHolder.DedicatedSaveTargetBeforeEmbedding = sourceTextureHandle; // ì›ë³¸ ë³µì‚¬ë³¸ ì €ì¥;
 
             using (new ProfilingScope(cmd, new ProfilingSampler(profilerTag)))
             {
                 int threadGroupsX = Mathf.CeilToInt((float)width / THREAD_GROUP_SIZE_X);
                 int threadGroupsY = Mathf.CeilToInt((float)height / THREAD_GROUP_SIZE_Y);
+
                 cmd.DispatchCompute(computeShader, kernelID, threadGroupsX, threadGroupsY, 1); // Dispatch
                 cmd.CopyTexture(outputTextureHandle, cameraTarget); // Copy result back
 
                 RTResultHolder.DedicatedSaveTarget = outputTextureHandle;
             }
-
 
             context.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);
@@ -265,7 +303,7 @@ public class LSBRenderFeature : ScriptableRendererFeature
        
         public override void OnCameraCleanup(CommandBuffer cmd) { }
         public void Cleanup()
-        { /* ÀÌÀü°ú µ¿ÀÏ */
+        { /* ì´ì „ê³¼ ë™ì¼ */
             bitstreamBuffer?.Release(); bitstreamBuffer = null;
             RTHandles.Release(sourceTextureHandle); sourceTextureHandle = null;
             RTHandles.Release(outputTextureHandle); outputTextureHandle = null;

@@ -1,0 +1,20 @@
+--- Benchmark Results (DCT-SS 강도 0.000432 계수 63) ---
+Timestamp: 2025-04-29 16:21:38
+Duration: 188.32s (Target: 180s)
+Total Frames: 834
+
+[FPS Metrics]
+  Average: 4.43 FPS
+  Minimum: 0.01 FPS
+  Maximum: 150.24 FPS
+  1% Low:  53.49 FPS
+
+[CPU Time (ms)]
+  Main Thread Avg: 7.83 ms
+  Main Thread Max: 44.09 ms
+[GPU Time (ms)]
+  GPU Frame Time Avg: 1.47 ms
+  GPU Frame Time Max: 3.19 ms
+
+Results saved to: E:\Github\DCTShaderWatermarking\Benchmark_DCT-SS 강도 0.000432 계수 63_2025-04-29_16-18-23.txt
+----------------------------------------

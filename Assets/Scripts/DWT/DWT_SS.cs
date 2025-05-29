@@ -1,4 +1,4 @@
-// DWTRenderFeature.cs
+ï»¿// DWTRenderFeature.cs
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -9,18 +9,22 @@ using System;
 
 public class DWTRenderFeature_SS : ScriptableRendererFeature
 {
-    [Header("¼ÎÀÌ´õ ¹× ¼³Á¤")]
-    public ComputeShader dwtComputeShader; // DWT¿ë .compute ÆÄÀÏ ÇÒ´ç
-    [Tooltip("DWT °è¼ö¿¡ ºñÆ®½ºÆ®¸²À» ÀÓº£µùÇÒÁö ¿©ºÎ")]
+    [Header("ì…°ì´ë” ë° ì„¤ì •")]
+    public ComputeShader dwtComputeShader; // DWTìš© .compute íŒŒì¼ í• ë‹¹
+    [Tooltip("DWT ê³„ìˆ˜ì— ë¹„íŠ¸ìŠ¤íŠ¸ë¦¼ì„ ì„ë² ë”©í• ì§€ ì—¬ë¶€")]
     public bool embedBitstream = true;
-    [Tooltip("È®»ê ½ºÆåÆ®·³ ÀÓº£µù °­µµ")]
-    public float embeddingStrength = 0.05f; // °­µµ Á¶Àı ÆÄ¶ó¹ÌÅÍ Ãß°¡ (°ª Á¶Àı ÇÊ¿ä)
-    [Tooltip("Addressables¿¡¼­ ·ÎµåÇÒ ¾ÏÈ£È­µÈ µ¥ÀÌÅÍ Å°")]
+    [Tooltip("í™•ì‚° ìŠ¤í™íŠ¸ëŸ¼ ì„ë² ë”© ê°•ë„")]
+    public float embeddingStrength = 0.05f; // ê°•ë„ ì¡°ì ˆ íŒŒë¼ë¯¸í„° ì¶”ê°€ (ê°’ ì¡°ì ˆ í•„ìš”)
+    [Tooltip("Addressablesì—ì„œ ë¡œë“œí•  ì•”í˜¸í™”ëœ ë°ì´í„° í‚¤")]
     public string addressableKey = "OriginBlockData";
-    [Tooltip("ºí·Ï´ç »ç¿ëÇÒ È®»ê ½ºÆåÆ®·³ °è¼ö °³¼ö (¿¹: HH ¿µ¿ª ³»)")]
+    [Tooltip("ë¸”ë¡ë‹¹ ì‚¬ìš©í•  í™•ì‚° ìŠ¤í™íŠ¸ëŸ¼ ê³„ìˆ˜ ê°œìˆ˜ (ì˜ˆ: HH ì˜ì—­ ë‚´)")]
     [Range(1,16)]
-    public uint coefficientsToUse = 10; // »ç¿ëÇÒ °è¼ö °³¼ö Ãß°¡ (ÃÖ´ë 16°³ - 8x8ºí·Ï HH)
+    public uint coefficientsToUse = 10; // ì‚¬ìš©í•  ê³„ìˆ˜ ê°œìˆ˜ ì¶”ê°€ (ìµœëŒ€ 16ê°œ - 8x8ë¸”ë¡ HH)
 
+    private float lastTime;
+    private float interval;
+    public float displayDuration = 0.02f;
+    private bool isWatermarkActive = false;
 
     private DWTRenderPass dwtRenderPass;
 
@@ -28,11 +32,14 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
     {
         if (dwtComputeShader == null)
         {
-            Debug.LogError("DWT Compute Shader°¡ ÇÒ´çµÇÁö ¾Ê¾Ò½À´Ï´Ù.");
+            Debug.LogError("DWT Compute Shaderê°€ í• ë‹¹ë˜ì§€ ì•Šì•˜ìŠµë‹ˆë‹¤.");
             return;
         }
 
-        // Pass »ı¼º ½Ã ÆÄ¶ó¹ÌÅÍ Àü´Ş
+        interval = 1.0f - displayDuration;
+        lastTime = Time.time - interval;
+
+        // Pass ìƒì„± ì‹œ íŒŒë¼ë¯¸í„° ì „ë‹¬
         dwtRenderPass = new DWTRenderPass(dwtComputeShader, name, embedBitstream, embeddingStrength, coefficientsToUse, addressableKey);
         dwtRenderPass.renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
     }
@@ -42,27 +49,38 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
         var camera = renderingData.cameraData.camera;
         if (camera.cameraType != CameraType.Game) { return; }
 
-        if (dwtComputeShader != null && dwtRenderPass != null)
+        if (dwtComputeShader != null && dwtRenderPass != null && DataManager.IsDataReady)
         {
-            // ¸Å ÇÁ·¹ÀÓ ¼³Á¤ ¾÷µ¥ÀÌÆ® (Inspector º¯°æ »çÇ× ¹İ¿µ)
-            dwtRenderPass.SetEmbedActive(embedBitstream);
-            dwtRenderPass.SetParameters(embeddingStrength, coefficientsToUse);
-
-            if (DataManager.IsDataReady)
+            if (!isWatermarkActive && displayDuration == 0)
             {
-                // ÆĞÅÏ ¹öÆÛ »ı¼º ¹× ¾÷µ¥ÀÌÆ® ·ÎÁ÷ Ãß°¡ (¸Å¹ø ÇÒ ÇÊ¿ä´Â ¾øÀ» ¼ö ÀÖÀ½)
+                Debug.Log("ì›Œí„°ë§ˆí‚¹ ë¹„ì‘ë™" + interval + " ì´ˆ ë™ì•ˆ");
+
+                if (Time.time - lastTime >= interval)
+                {
+                    isWatermarkActive = true;  // âœ… ì›Œí„°ë§ˆí‚¹ í™œì„±í™”
+                    lastTime = Time.time;
+
+                    return;
+                }
+            }
+
+            else
+            {
+                if (Time.time - lastTime >= displayDuration && displayDuration != 1)
+                {
+                    isWatermarkActive = false;
+                    lastTime = Time.time;
+                    return;
+                }
+
+                // ë§¤ í”„ë ˆì„ ì„¤ì • ì—…ë°ì´íŠ¸ (Inspector ë³€ê²½ ì‚¬í•­ ë°˜ì˜)
+                dwtRenderPass.SetEmbedActive(embedBitstream);
+                dwtRenderPass.SetParameters(embeddingStrength, coefficientsToUse);
+
+                // íŒ¨í„´ ë²„í¼ ìƒì„± ë° ì—…ë°ì´íŠ¸ ë¡œì§ ì¶”ê°€ (ë§¤ë²ˆ í•  í•„ìš”ëŠ” ì—†ì„ ìˆ˜ ìˆìŒ)
                 dwtRenderPass.UpdatePatternBufferIfNeeded(renderingData.cameraData.cameraTargetDescriptor);
                 renderer.EnqueuePass(dwtRenderPass);
             }
-            else if (embedBitstream)
-            {
-                Debug.LogWarning("[DWTRenderFeature] µ¥ÀÌÅÍ ¹ÌÁØºñ. ÀÓº£µù ÆĞ½º °Ç³Ê¶Ü.");
-            }
-            // ÀÓº£µù ºñÈ°¼º½Ã ±×³É Åë°ú½ÃÅ°´Â ·ÎÁ÷Àº Á¦°Å (¿øº»¸¸ ÇÊ¿äÇÏ¸é ÆĞ½º Ãß°¡ ¾ÈÇÔ)
-            // else
-            // {
-            //     // ÀÓº£µù ¾È ÇÒ ¶§´Â ÆĞ½º Ãß°¡ ºÒÇÊ¿ä (¿øº» È­¸éÀÌ ±×³É ³ª¿È)
-            // }
         }
     }
 
@@ -82,15 +100,15 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
 
         private string profilerTag;
         private bool embedActive;
-        private float currentEmbeddingStrength; // ÇöÀç °­µµ ÀúÀå
-        private uint currentCoefficientsToUse; // ÇöÀç »ç¿ëÇÒ °è¼ö °³¼ö ÀúÀå
+        private float currentEmbeddingStrength; // í˜„ì¬ ê°•ë„ ì €ì¥
+        private uint currentCoefficientsToUse; // í˜„ì¬ ì‚¬ìš©í•  ê³„ìˆ˜ ê°œìˆ˜ ì €ì¥
         private string secretKey;
 
         private ComputeBuffer bitstreamBuffer;
-        private ComputeBuffer patternBuffer; // È®»ê ÆĞÅÏ ¹öÆÛ Ãß°¡
+        private ComputeBuffer patternBuffer; // í™•ì‚° íŒ¨í„´ ë²„í¼ ì¶”ê°€
 
         private List<uint> finalBitsToEmbed;
-        private List<float> currentPatternData; // ÆĞÅÏ µ¥ÀÌÅÍ ÀúÀå¿ë ¸®½ºÆ®
+        private List<float> currentPatternData; // íŒ¨í„´ ë°ì´í„° ì €ì¥ìš© ë¦¬ìŠ¤íŠ¸
 
         private const int BLOCK_SIZE = 8;
         private const int HALF_BLOCK_SIZE = BLOCK_SIZE / 2;
@@ -103,10 +121,10 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
             embedActive = initialEmbedState;
             currentEmbeddingStrength = initialStrength;
             currentCoefficientsToUse = initialCoeffs;
-            this.secretKey = secretKey; // Addressables¿¡¼­ ·ÎµåÇÒ Å° ÀúÀå
+            this.secretKey = secretKey; // Addressablesì—ì„œ ë¡œë“œí•  í‚¤ ì €ì¥
 
             dwtRowsKernelID = shader.FindKernel("DWT_Pass1_Rows");
-            dwtColsKernelID = shader.FindKernel("DWT_Pass2_Cols_EmbedSS"); // Ä¿³Î ÀÌ¸§ º¯°æ Á¦¾È (SS ¸í½Ã)
+            dwtColsKernelID = shader.FindKernel("DWT_Pass2_Cols_EmbedSS"); // ì»¤ë„ ì´ë¦„ ë³€ê²½ ì œì•ˆ (SS ëª…ì‹œ)
             idwtColsKernelID = shader.FindKernel("IDWT_Pass1_Cols");
             idwtRowsKernelID = shader.FindKernel("IDWT_Pass2_Rows");
 
@@ -115,7 +133,7 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
 
             if (dwtRowsKernelID < 0 || dwtColsKernelID < 0 || idwtColsKernelID < 0 || idwtRowsKernelID < 0)
             {
-                Debug.LogError($"[DWTRenderPass] ÇÏ³ª ÀÌ»óÀÇ DWT Compute Shader Ä¿³ÎÀ» Ã£À» ¼ö ¾ø½À´Ï´Ù. Ä¿³Î ÀÌ¸§À» È®ÀÎÇÏ¼¼¿ä: DWT_Pass1_Rows, DWT_Pass2_Cols_EmbedSS, IDWT_Pass1_Cols, IDWT_Pass2_Rows");
+                Debug.LogError($"[DWTRenderPass] í•˜ë‚˜ ì´ìƒì˜ DWT Compute Shader ì»¤ë„ì„ ì°¾ì„ ìˆ˜ ì—†ìŠµë‹ˆë‹¤. ì»¤ë„ ì´ë¦„ì„ í™•ì¸í•˜ì„¸ìš”: DWT_Pass1_Rows, DWT_Pass2_Cols_EmbedSS, IDWT_Pass1_Cols, IDWT_Pass2_Rows");
             }
         }
 
@@ -123,16 +141,16 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
         public void SetParameters(float strength, uint coeffs)
         {
             currentEmbeddingStrength = strength;
-            // »ç¿ëÇÒ °è¼ö °³¼ö°¡ HH ¿µ¿ª ÃÖ´ë °³¼ö(16)¸¦ ³ÑÁö ¾Êµµ·Ï Á¦ÇÑ
+            // ì‚¬ìš©í•  ê³„ìˆ˜ ê°œìˆ˜ê°€ HH ì˜ì—­ ìµœëŒ€ ê°œìˆ˜(16)ë¥¼ ë„˜ì§€ ì•Šë„ë¡ ì œí•œ
             currentCoefficientsToUse = Math.Min(coeffs, (uint)HH_COEFFS_PER_BLOCK);
         }
 
-        // ÇÊ¿äÇÒ ¶§¸¸ ÆĞÅÏ ¹öÆÛ ¾÷µ¥ÀÌÆ® (¿¹: °ÔÀÓ ½ÃÀÛ ½Ã, ¶Ç´Â ¼³Á¤ º¯°æ ½Ã)
+        // í•„ìš”í•  ë•Œë§Œ íŒ¨í„´ ë²„í¼ ì—…ë°ì´íŠ¸ (ì˜ˆ: ê²Œì„ ì‹œì‘ ì‹œ, ë˜ëŠ” ì„¤ì • ë³€ê²½ ì‹œ)
         public void UpdatePatternBufferIfNeeded(RenderTextureDescriptor desc)
         {
             if (!embedActive || currentCoefficientsToUse == 0)
             {
-                ReleasePatternBuffer(); // »ç¿ë ¾ÈÇÏ¸é ÇØÁ¦
+                ReleasePatternBuffer(); // ì‚¬ìš© ì•ˆí•˜ë©´ í•´ì œ
                 return;
             }
 
@@ -149,14 +167,14 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
                 return;
             }
 
-            // ÆĞÅÏ µ¥ÀÌÅÍ°¡ ¾ø°Å³ª Å©±â°¡ ´Ù¸£¸é »õ·Î »ı¼º
+            // íŒ¨í„´ ë°ì´í„°ê°€ ì—†ê±°ë‚˜ í¬ê¸°ê°€ ë‹¤ë¥´ë©´ ìƒˆë¡œ ìƒì„±
             if (currentPatternData == null || currentPatternData.Count != requiredPatternSize)
             {
-                Debug.Log($"[DWTRenderPass] Pattern Buffer »ı¼º/¾÷µ¥ÀÌÆ® ÇÊ¿ä. ¿ä±¸ Å©±â: {requiredPatternSize}");
+                Debug.Log($"[DWTRenderPass] Pattern Buffer ìƒì„±/ì—…ë°ì´íŠ¸ í•„ìš”. ìš”êµ¬ í¬ê¸°: {requiredPatternSize}");
                 GeneratePatternData(requiredPatternSize, secretKey);
                 UpdatePatternComputeBuffer();
             }
-            // ÀÌ¹Ì ÀÖ´Ù¸é ¾÷µ¥ÀÌÆ® ºÒÇÊ¿ä (¸Å ÇÁ·¹ÀÓ »ı¼º ¹æÁö)
+            // ì´ë¯¸ ìˆë‹¤ë©´ ì—…ë°ì´íŠ¸ ë¶ˆí•„ìš” (ë§¤ í”„ë ˆì„ ìƒì„± ë°©ì§€)
         }
 
         private void GeneratePatternData(int size, string secretKey)
@@ -165,14 +183,14 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
             System.Random random = new System.Random(secretKey.GetHashCode());
             for (int i = 0; i < size; i++)
             {
-                // +1 ¶Ç´Â -1 ·£´ı »ı¼º
+                // +1 ë˜ëŠ” -1 ëœë¤ ìƒì„±
                 currentPatternData.Add((random.NextDouble() < 0.5) ? -1.0f : 1.0f);
 
             }
-            // Ã¹ 64°³ ÆĞÅÏ ·Î±× Ãâ·Â (µğ¹ö±ë¿ë)
+            // ì²« 64ê°œ íŒ¨í„´ ë¡œê·¸ ì¶œë ¥ (ë””ë²„ê¹…ìš©)
             int logLength = Math.Min(currentPatternData.Count, 64);
             string firstPatterns = string.Join(", ", currentPatternData.Take(logLength).Select(p => p.ToString("F1")));
-            Debug.Log($"[DWTRenderPass] »ı¼ºµÈ ÆĞÅÏ µ¥ÀÌÅÍ (Ã³À½ {logLength}°³): [{firstPatterns}]");
+            Debug.Log($"[DWTRenderPass] ìƒì„±ëœ íŒ¨í„´ ë°ì´í„° (ì²˜ìŒ {logLength}ê°œ): [{firstPatterns}]");
         }
 
         private void UpdatePatternComputeBuffer()
@@ -190,17 +208,17 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
                 try
                 {
                     patternBuffer = new ComputeBuffer(count, sizeof(float), ComputeBufferType.Structured);
-                    // Debug.Log($"[DWTRenderPass] Pattern ComputeBuffer »ı¼ºµÊ (Count: {count})");
+                    // Debug.Log($"[DWTRenderPass] Pattern ComputeBuffer ìƒì„±ë¨ (Count: {count})");
                 }
-                catch (Exception) { /* ... ¿¡·¯ Ã³¸® ... */ return; }
+                catch (Exception) { /* ... ì—ëŸ¬ ì²˜ë¦¬ ... */ return; }
             }
 
             try
             {
                 patternBuffer.SetData(currentPatternData);
-                // Debug.Log($"[DWTRenderPass] Pattern ComputeBuffer µ¥ÀÌÅÍ ¼³Á¤ ¿Ï·á (Count: {count})");
+                // Debug.Log($"[DWTRenderPass] Pattern ComputeBuffer ë°ì´í„° ì„¤ì • ì™„ë£Œ (Count: {count})");
             }
-            catch (Exception) { /* ... ¿¡·¯ Ã³¸® ... */ ReleasePatternBuffer(); }
+            catch (Exception) { /* ... ì—ëŸ¬ ì²˜ë¦¬ ... */ ReleasePatternBuffer(); }
         }
 
 
@@ -214,7 +232,7 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
         }
 
 
-        private void UpdateBitstreamBuffer(List<uint> data) // ±âÁ¸ ÇÔ¼ö Àç»ç¿ë
+        private void UpdateBitstreamBuffer(List<uint> data) // ê¸°ì¡´ í•¨ìˆ˜ ì¬ì‚¬ìš©
         {
             int count = (data != null) ? data.Count : 0;
             if (count == 0)
@@ -229,13 +247,13 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
                 {
                     bitstreamBuffer = new ComputeBuffer(count, sizeof(uint), ComputeBufferType.Structured);
                 }
-                catch (Exception) { /* ... ¿¡·¯ Ã³¸® ... */ return; }
+                catch (Exception) { /* ... ì—ëŸ¬ ì²˜ë¦¬ ... */ return; }
             }
             try
             {
                 bitstreamBuffer.SetData(data);
             }
-            catch (Exception) { /* ... ¿¡·¯ Ã³¸® ... */ ReleaseBitstreamBuffer(); }
+            catch (Exception) { /* ... ì—ëŸ¬ ì²˜ë¦¬ ... */ ReleaseBitstreamBuffer(); }
         }
 
         public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
@@ -243,23 +261,24 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
             var desc = renderingData.cameraData.cameraTargetDescriptor;
             desc.depthBufferBits = 0;
             desc.msaaSamples = 1;
+            desc.sRGB = false;
 
             var bufferDesc = desc;
             bufferDesc.colorFormat = RenderTextureFormat.ARGBFloat;
             bufferDesc.enableRandomWrite = true;
-            bufferDesc.sRGB = false;
+            
 
             RenderingUtils.ReAllocateIfNeeded(ref sourceTextureHandle, desc, FilterMode.Point, name: "_SourceCopyForDWT");
             RenderingUtils.ReAllocateIfNeeded(ref intermediateHandle, bufferDesc, FilterMode.Point, name: "_IntermediateDWT_IDWT");
             RenderingUtils.ReAllocateIfNeeded(ref dwtOutputHandle, bufferDesc, FilterMode.Point, name: "_DWTOutput");
             RenderingUtils.ReAllocateIfNeeded(ref idwtOutputHandle, bufferDesc, FilterMode.Point, name: "_IDWTOutput");
 
-            // --- ºñÆ®½ºÆ®¸² ÁØºñ (±âÁ¸ ·ÎÁ÷ Àç»ç¿ë) ---
+            // --- ë¹„íŠ¸ìŠ¤íŠ¸ë¦¼ ì¤€ë¹„ (ê¸°ì¡´ ë¡œì§ ì¬ì‚¬ìš©) ---
 
             int width = desc.width;
             int height = desc.height;
-            int numBlocksX = Mathf.Max(1, (width + BLOCK_SIZE - 1) / BLOCK_SIZE); // ¿Ã¸² °è»ê
-            int numBlocksY = Mathf.Max(1, (height + BLOCK_SIZE - 1) / BLOCK_SIZE); // ¿Ã¸² °è»ê
+            int numBlocksX = Mathf.Max(1, (width + BLOCK_SIZE - 1) / BLOCK_SIZE); // ì˜¬ë¦¼ ê³„ì‚°
+            int numBlocksY = Mathf.Max(1, (height + BLOCK_SIZE - 1) / BLOCK_SIZE); // ì˜¬ë¦¼ ê³„ì‚°
             int availableCapacity = numBlocksX * numBlocksY;
 
             if (finalBitsToEmbed.Count != availableCapacity)
@@ -277,7 +296,7 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
 
                             int totalPayloadLength = currentPayload.Count;
 
-                            // Debug.Log($"[DWTRenderPass] ÀÌ¹ÌÁö Å©±â: {width}x{height}, ºí·Ï Å©±â: {BLOCK_SIZE}, ÃÑ ºí·Ï ¼ö: {availableCapacity}, ¿øº» ÆäÀÌ·Îµå ±æÀÌ: {totalPayloadLength}");
+                            // Debug.Log($"[DWTRenderPass] ì´ë¯¸ì§€ í¬ê¸°: {width}x{height}, ë¸”ë¡ í¬ê¸°: {BLOCK_SIZE}, ì´ ë¸”ë¡ ìˆ˜: {availableCapacity}, ì›ë³¸ í˜ì´ë¡œë“œ ê¸¸ì´: {totalPayloadLength}");
 
                             if (availableCapacity > 0 && totalPayloadLength > 0)
                             {
@@ -291,31 +310,31 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
                                     finalBitsToEmbed.AddRange(currentPayload.GetRange(0, countToAdd));
                                     currentPosition += countToAdd;
                                 }
-                                // Debug.Log($"[DWTRenderPass] ÆĞµù/Àı´Ü ¿Ï·á. ÃÖÁ¾ ºñÆ® ¼ö: {finalBitsToEmbed.Count} (¿ë·®: {availableCapacity})");
+                                // Debug.Log($"[DWTRenderPass] íŒ¨ë”©/ì ˆë‹¨ ì™„ë£Œ. ìµœì¢… ë¹„íŠ¸ ìˆ˜: {finalBitsToEmbed.Count} (ìš©ëŸ‰: {availableCapacity})");
                             }
                         }
                     }
-                    catch (Exception) { /* ... ¿¡·¯ Ã³¸® ... */ finalBitsToEmbed.Clear(); }
+                    catch (Exception) { /* ... ì—ëŸ¬ ì²˜ë¦¬ ... */ finalBitsToEmbed.Clear(); }
                 }
 
-                UpdateBitstreamBuffer(finalBitsToEmbed); // ºñÆ®½ºÆ®¸² ¹öÆÛ ¾÷µ¥ÀÌÆ®
+                UpdateBitstreamBuffer(finalBitsToEmbed); // ë¹„íŠ¸ìŠ¤íŠ¸ë¦¼ ë²„í¼ ì—…ë°ì´íŠ¸
             }
-            // --- ¼ÎÀÌ´õ ÆÄ¶ó¹ÌÅÍ ¼³Á¤ ---
+            // --- ì…°ì´ë” íŒŒë¼ë¯¸í„° ì„¤ì • ---
             int currentBitLength = finalBitsToEmbed.Count;
             bool bitstreamBufferValid = bitstreamBuffer != null && bitstreamBuffer.IsValid() && bitstreamBuffer.count == currentBitLength;
-            bool patternBufferValid = patternBuffer != null && patternBuffer.IsValid(); // ÆĞÅÏ ¹öÆÛ À¯È¿¼º °Ë»ç Ãß°¡
+            bool patternBufferValid = patternBuffer != null && patternBuffer.IsValid(); // íŒ¨í„´ ë²„í¼ ìœ íš¨ì„± ê²€ì‚¬ ì¶”ê°€
 
-            // ÃÖÁ¾ ÀÓº£µù Á¶°Ç ¼öÁ¤: ÆĞÅÏ ¹öÆÛ À¯È¿¼º ¹× CoefficientsToUse > 0 Á¶°Ç Ãß°¡
+            // ìµœì¢… ì„ë² ë”© ì¡°ê±´ ìˆ˜ì •: íŒ¨í„´ ë²„í¼ ìœ íš¨ì„± ë° CoefficientsToUse > 0 ì¡°ê±´ ì¶”ê°€
             bool shouldEmbed = embedActive && DataManager.IsDataReady && bitstreamBufferValid && patternBufferValid && currentBitLength > 0 && currentCoefficientsToUse > 0;
 
-            // Debug.Log($"[DWTRenderPass] ÃÖÁ¾ ºñÆ® ±æÀÌ: {currentBitLength} / BitBuffer:{bitstreamBufferValid} / PatternBuffer:{patternBufferValid} / Embed:{embedActive} / DataReady:{DataManager.IsDataReady} / Coeffs>0:{currentCoefficientsToUse > 0} => ÃÖÁ¾ Embed:{shouldEmbed}");
+            // Debug.Log($"[DWTRenderPass] ìµœì¢… ë¹„íŠ¸ ê¸¸ì´: {currentBitLength} / BitBuffer:{bitstreamBufferValid} / PatternBuffer:{patternBufferValid} / Embed:{embedActive} / DataReady:{DataManager.IsDataReady} / Coeffs>0:{currentCoefficientsToUse > 0} => ìµœì¢… Embed:{shouldEmbed}");
 
             computeShader.SetInt("Width", width);
             computeShader.SetInt("Height", height);
-            computeShader.SetFloat("EmbeddingStrength", currentEmbeddingStrength); // °­µµ Àü´Ş
-            computeShader.SetInt("CoefficientsToUse", (int)currentCoefficientsToUse); // »ç¿ëÇÒ °è¼ö °³¼ö Àü´Ş
+            computeShader.SetFloat("EmbeddingStrength", currentEmbeddingStrength); // ê°•ë„ ì „ë‹¬
+            computeShader.SetInt("CoefficientsToUse", (int)currentCoefficientsToUse); // ì‚¬ìš©í•  ê³„ìˆ˜ ê°œìˆ˜ ì „ë‹¬
 
-            // --- Ä¿³Î¿¡ ÆÄ¶ó¹ÌÅÍ ¹ÙÀÎµù ---
+            // --- ì»¤ë„ì— íŒŒë¼ë¯¸í„° ë°”ì¸ë”© ---
             // DWT Pass 1
             if (dwtRowsKernelID >= 0)
             {
@@ -340,8 +359,8 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
                 {
                     computeShader.SetInt("BitLength", 0);
                 }
-                // ÆĞÅÏ ¹öÆÛ ¹ÙÀÎµù
-                // Debug.Log($"[DWTRenderPass] DWT Pass 2: Bitstream({currentBitLength}), PatternBuffer({patternBuffer.count}) ¹ÙÀÎµùµÊ.");
+                // íŒ¨í„´ ë²„í¼ ë°”ì¸ë”©
+                // Debug.Log($"[DWTRenderPass] DWT Pass 2: Bitstream({currentBitLength}), PatternBuffer({patternBuffer.count}) ë°”ì¸ë”©ë¨.");
             }
             // IDWT Pass 1
             if (idwtColsKernelID >= 0)
@@ -357,10 +376,10 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
             }
             //cmd.SetComputeIntParam(computeShader, "Width", width);
             //cmd.SetComputeIntParam(computeShader, "Height", height);
-            //cmd.SetComputeFloatParam(computeShader, "EmbeddingStrength", currentEmbeddingStrength); // °­µµ Àü´Ş
-            //cmd.SetComputeIntParam(computeShader, "CoefficientsToUse", (int)currentCoefficientsToUse); // »ç¿ëÇÒ °è¼ö °³¼ö Àü´Ş
+            //cmd.SetComputeFloatParam(computeShader, "EmbeddingStrength", currentEmbeddingStrength); // ê°•ë„ ì „ë‹¬
+            //cmd.SetComputeIntParam(computeShader, "CoefficientsToUse", (int)currentCoefficientsToUse); // ì‚¬ìš©í•  ê³„ìˆ˜ ê°œìˆ˜ ì „ë‹¬
 
-            //// --- Ä¿³Î¿¡ ÆÄ¶ó¹ÌÅÍ ¹ÙÀÎµù ---
+            //// --- ì»¤ë„ì— íŒŒë¼ë¯¸í„° ë°”ì¸ë”© ---
             //// DWT Pass 1
             //if (dwtRowsKernelID >= 0)
             //{
@@ -386,8 +405,8 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
             //    {
             //        cmd.SetComputeIntParam(computeShader, "BitLength", 0);
             //    }
-            //    // ÆĞÅÏ ¹öÆÛ ¹ÙÀÎµù
-            //    // Debug.Log($"[DWTRenderPass] DWT Pass 2: Bitstream({currentBitLength}), PatternBuffer({patternBuffer.count}) ¹ÙÀÎµùµÊ.");
+            //    // íŒ¨í„´ ë²„í¼ ë°”ì¸ë”©
+            //    // Debug.Log($"[DWTRenderPass] DWT Pass 2: Bitstream({currentBitLength}), PatternBuffer({patternBuffer.count}) ë°”ì¸ë”©ë¨.");
 
             //}
             //// IDWT Pass 1
@@ -406,42 +425,42 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
 
         public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
         {
-            // ... (±âÁ¸ Ä¿³Î À¯È¿¼º °Ë»ç, RTHandle À¯È¿¼º °Ë»ç, ½º·¹µå ±×·ì °è»ê µîÀº µ¿ÀÏÇÏ°Ô À¯Áö) ...
+            // ... (ê¸°ì¡´ ì»¤ë„ ìœ íš¨ì„± ê²€ì‚¬, RTHandle ìœ íš¨ì„± ê²€ì‚¬, ìŠ¤ë ˆë“œ ê·¸ë£¹ ê³„ì‚° ë“±ì€ ë™ì¼í•˜ê²Œ ìœ ì§€) ...
             bool kernelsValid = dwtRowsKernelID >= 0 && dwtColsKernelID >= 0 && idwtColsKernelID >= 0 && idwtRowsKernelID >= 0;
-            if (!kernelsValid) { /* ... ¿¡·¯ Ã³¸® ... */ return; }
+            if (!kernelsValid) { /* ... ì—ëŸ¬ ì²˜ë¦¬ ... */ return; }
 
             CommandBuffer cmd = CommandBufferPool.Get(profilerTag);
             var cameraTarget = renderingData.cameraData.renderer.cameraColorTargetHandle;
 
-            // RTHandle À¯È¿¼º °Ë»ç Ãß°¡
+            // RTHandle ìœ íš¨ì„± ê²€ì‚¬ ì¶”ê°€
             if (sourceTextureHandle == null || intermediateHandle == null || dwtOutputHandle == null || idwtOutputHandle == null || cameraTarget == null)
             {
-                Debug.LogError("[DWTRenderPass] ÇÏ³ª ÀÌ»óÀÇ RTHandleÀÌ À¯È¿ÇÏÁö ¾Ê½À´Ï´Ù. Execute Áß´Ü.");
+                Debug.LogError("[DWTRenderPass] í•˜ë‚˜ ì´ìƒì˜ RTHandleì´ ìœ íš¨í•˜ì§€ ì•ŠìŠµë‹ˆë‹¤. Execute ì¤‘ë‹¨.");
                 CommandBufferPool.Release(cmd);
                 return;
             }
             int width = cameraTarget.rt?.width ?? renderingData.cameraData.cameraTargetDescriptor.width;
             int height = cameraTarget.rt?.height ?? renderingData.cameraData.cameraTargetDescriptor.height;
-            if (width <= 0 || height <= 0) { /* ... ¿¡·¯ Ã³¸® ... */ CommandBufferPool.Release(cmd); return; }
+            if (width <= 0 || height <= 0) { /* ... ì—ëŸ¬ ì²˜ë¦¬ ... */ CommandBufferPool.Release(cmd); return; }
 
             int threadGroupsX = (width + BLOCK_SIZE - 1) / BLOCK_SIZE;
             int threadGroupsY = (height + BLOCK_SIZE - 1) / BLOCK_SIZE;
-            if (threadGroupsX <= 0 || threadGroupsY <= 0) { /* ... ¿¡·¯ Ã³¸® ... */ CommandBufferPool.Release(cmd); return; }
+            if (threadGroupsX <= 0 || threadGroupsY <= 0) { /* ... ì—ëŸ¬ ì²˜ë¦¬ ... */ CommandBufferPool.Release(cmd); return; }
 
 
-            // ÀÓº£µù È°¼ºÈ­ÀÎµ¥ ÇÊ¿äÇÑ ¹öÆÛ°¡ ÁØºñ ¾ÈµÆÀ¸¸é ½ÇÇàÇÏÁö ¾ÊÀ½ (¿À·ù ¹æÁö)
+            // ì„ë² ë”© í™œì„±í™”ì¸ë° í•„ìš”í•œ ë²„í¼ê°€ ì¤€ë¹„ ì•ˆëìœ¼ë©´ ì‹¤í–‰í•˜ì§€ ì•ŠìŒ (ì˜¤ë¥˜ ë°©ì§€)
             bool shouldEmbed = embedActive && DataManager.IsDataReady && bitstreamBuffer != null && bitstreamBuffer.IsValid() && patternBuffer != null && patternBuffer.IsValid() && finalBitsToEmbed.Count > 0 && currentCoefficientsToUse > 0;
             if (embedActive && !shouldEmbed)
             {
-                Debug.LogWarning("[DWTRenderPass Execute] ÀÓº£µù Á¶°Ç ¹ÌÃæÁ·, ÆĞ½º ½ÇÇà °Ç³Ê¶Ü.");
-                // ÀÌ °æ¿ì, ¿øº» È­¸éÀ» À¯ÁöÇØ¾ß ÇÏ¹Ç·Î ¾Æ¹« ÀÛ¾÷µµ ÇÏÁö ¾Ê°Å³ª Blit(source, target)¸¸ ¼öÇà
-                // ¿©±â¼­´Â ±×³É ¸®ÅÏÇÏ¿© ÀÌÀü ÇÁ·¹ÀÓ À¯Áö (¶Ç´Â Blit Ãß°¡)
+                Debug.LogWarning("[DWTRenderPass Execute] ì„ë² ë”© ì¡°ê±´ ë¯¸ì¶©ì¡±, íŒ¨ìŠ¤ ì‹¤í–‰ ê±´ë„ˆëœ€.");
+                // ì´ ê²½ìš°, ì›ë³¸ í™”ë©´ì„ ìœ ì§€í•´ì•¼ í•˜ë¯€ë¡œ ì•„ë¬´ ì‘ì—…ë„ í•˜ì§€ ì•Šê±°ë‚˜ Blit(source, target)ë§Œ ìˆ˜í–‰
+                // ì—¬ê¸°ì„œëŠ” ê·¸ëƒ¥ ë¦¬í„´í•˜ì—¬ ì´ì „ í”„ë ˆì„ ìœ ì§€ (ë˜ëŠ” Blit ì¶”ê°€)
                 CommandBufferPool.Release(cmd);
                 return;
             }
 
 
-            cmd.Blit(cameraTarget, sourceTextureHandle); // ¿øº» º¹»ç
+            cmd.Blit(cameraTarget, sourceTextureHandle); // ì›ë³¸ ë³µì‚¬
             RTResultHolder.DedicatedSaveTargetBeforeEmbedding = sourceTextureHandle;
 
 
@@ -451,7 +470,7 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
                 cmd.DispatchCompute(computeShader, dwtRowsKernelID, threadGroupsX, threadGroupsY, 1);
                 //if (Input.GetKey(KeyCode.F1)) cmd.Blit(intermediateHandle, cameraTarget);
 
-                cmd.DispatchCompute(computeShader, dwtColsKernelID, threadGroupsX, threadGroupsY, 1); // Embed SS Æ÷ÇÔ Ä¿³Î
+                cmd.DispatchCompute(computeShader, dwtColsKernelID, threadGroupsX, threadGroupsY, 1); // Embed SS í¬í•¨ ì»¤ë„
                 //if (Input.GetKey(KeyCode.F2)) cmd.Blit(dwtOutputHandle, cameraTarget);
 
                 // IDWT
@@ -460,11 +479,11 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
 
                 cmd.DispatchCompute(computeShader, idwtRowsKernelID, threadGroupsX, threadGroupsY, 1);
 
-                // ÃÖÁ¾ °á°ú º¹»ç
+                // ìµœì¢… ê²°ê³¼ ë³µì‚¬
                 cmd.Blit(idwtOutputHandle, cameraTarget);
                 //if(Input.GetKey(KeyCode.F4)) cmd.Blit(idwtOutputHandle, cameraTarget);
 
-                // °á°ú ÀúÀå¿ë ¼³Á¤ (ÇÊ¿ä½Ã)
+                // ê²°ê³¼ ì €ì¥ìš© ì„¤ì • (í•„ìš”ì‹œ)
                 RTResultHolder.DedicatedSaveTarget = idwtOutputHandle;
             }
 
@@ -477,8 +496,8 @@ public class DWTRenderFeature_SS : ScriptableRendererFeature
 
         public void Cleanup()
         {
-            ReleaseBitstreamBuffer(); // ºñÆ®½ºÆ®¸² ¹öÆÛ ÇØÁ¦
-            ReleasePatternBuffer(); // ÆĞÅÏ ¹öÆÛ ÇØÁ¦
+            ReleaseBitstreamBuffer(); // ë¹„íŠ¸ìŠ¤íŠ¸ë¦¼ ë²„í¼ í•´ì œ
+            ReleasePatternBuffer(); // íŒ¨í„´ ë²„í¼ í•´ì œ
             RTHandles.Release(sourceTextureHandle); sourceTextureHandle = null;
             RTHandles.Release(intermediateHandle); intermediateHandle = null;
             RTHandles.Release(dwtOutputHandle); dwtOutputHandle = null;

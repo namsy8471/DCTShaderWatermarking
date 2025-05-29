@@ -1,0 +1,21 @@
+--- Benchmark Results (LSB 0.5) ---
+Timestamp: 2025-05-29 11:28:10
+Duration: 30.00s (Target: 30s)
+Total Frames: 4259
+
+[FPS Metrics]
+  Average: 141.95 FPS
+  Minimum: 7.88 FPS
+  Maximum: 306.41 FPS
+  1% Low:  12.28 FPS
+
+  99th Percentile: 68.54 ms
+[CPU Time (ms)]
+  Main Thread Avg: 7.04 ms
+  Main Thread Max: 122.98 ms
+[GPU Time (ms)]
+  GPU Frame Time Avg: 2.61 ms
+  GPU Frame Time Max: 15.47 ms
+
+Results saved to: E:\Github\DCTShaderWatermarking\Benchmark_LSB 0.5_2025-05-29_11-27-35.txt
+----------------------------------------

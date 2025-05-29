@@ -10,7 +10,8 @@ public class BenchmarkFPS : MonoBehaviour
 {
     [Header("Benchmark Settings")]
     public string testIdentifier = "DefaultTest"; // 테스트 식별자 (인스펙터에서 수정)
-    public float benchmarkDuration = 60f; // 벤치마크 실행 시간 (초)
+    public float benchmarkDuration = 180f; // 벤치마크 실행 시간 (초)
+    public int frameLimit = -1; // 프레임 제한(-1일 경우 무한)
     public float warmupDuration = 5f; // 벤치마크 시작 전 안정화 시간 (초)
     public bool quitAfterBenchmark = true; // 벤치마크 후 자동 종료 여부
 
@@ -42,9 +43,12 @@ public class BenchmarkFPS : MonoBehaviour
     private string filePath;
     private string realtimeStatText = "";
 
+    // 기존 변수들 아래에 추가
+    private List<float> rawFrameTimeMilliseconds = new List<float>(); // 프레임 시간 저장 리스트 (ms 단위)
+
     void Start()
     {
-        Application.targetFrameRate = -1; // 프레임 제한 해제
+        Application.targetFrameRate = frameLimit; // 프레임 제한 해제
         QualitySettings.vSyncCount = 0; // VSync 비활성화
 
         SetupFilePath();
@@ -114,6 +118,8 @@ public class BenchmarkFPS : MonoBehaviour
         {
             // FPS 데이터 기록
             frameTimesList.Add(currentFPS);
+            // 프레임 시간 데이터 기록 (추가할 코드)
+            rawFrameTimeMilliseconds.Add(frameDeltaTime * 1000f); // ms 단위로 저장
             totalFrameTime += frameDeltaTime;
             frameCount++;
 
@@ -178,6 +184,10 @@ public class BenchmarkFPS : MonoBehaviour
         float low1PercentFPS = GetPercentileFPS(frameTimesList, 0.01f); // 1% Low FPS
         // float low01PercentFPS = GetPercentileFPS(frameTimesList, 0.001f); // 필요하다면 0.1% Low
 
+        // 99th Percentile Frame Time 계산 (핵심)
+        float frameTime99thPercentile = GetPercentileValue(rawFrameTimeMilliseconds, 0.99f); // 99% 백분위수
+
+
         // CPU/GPU Times (ms) - 평균, 최대값
         float avgMainThreadTime = mainThreadTimes.Any() ? mainThreadTimes.Average() : 0f;
         float maxMainThreadTime = mainThreadTimes.Any() ? mainThreadTimes.Max() : 0f;
@@ -195,6 +205,9 @@ public class BenchmarkFPS : MonoBehaviour
         result += $"  Maximum: {maxFPS:F2} FPS\n";
         result += $"  1% Low:  {low1PercentFPS:F2} FPS\n\n";
         // result += $"  0.1% Low: {low01PercentFPS:F2} FPS\n\n"; // 필요시 추가
+        result += $"  99th Percentile: {frameTime99thPercentile:F2} ms\n"; // 99th 백분위수 추가
+        // result += $"  95th Percentile: {frameTime95thPercentile:F2} ms\n"; // 필요시 추가
+        // result += $"  99.9th Percentile: {frameTime99_9thPercentile:F2} ms\n\n"; // 필요시 추가
         result += "[CPU Time (ms)]\n";
         result += $"  Main Thread Avg: {avgMainThreadTime:F2} ms\n";
         result += $"  Main Thread Max: {maxMainThreadTime:F2} ms\n";
@@ -216,6 +229,41 @@ public class BenchmarkFPS : MonoBehaviour
 
         int count = Mathf.Max(1, Mathf.CeilToInt(fpsList.Count * percentile)); // 올림 처리하여 최소 1개 보장
         return fpsList.OrderBy(f => f).Take(count).Average();
+    }
+
+    // 백분위수 값 계산 함수 (수정 및 추가)
+    // Nth Percentile에 해당하는 "값"을 반환합니다.
+    private float GetPercentileValue(List<float> dataList, float percentile)
+    {
+        if (dataList == null || dataList.Count == 0) return 0f;
+
+        // 데이터를 오름차순으로 정렬 (프레임 시간은 짧은 것부터 긴 것으로)
+        var sortedList = dataList.OrderBy(d => d).ToList();
+
+        // 백분위수에 해당하는 인덱스 계산
+        // (N * Count) - 1 이 일반적인 인덱스 계산법이며, 올림/내림 등 다양한 정의가 있으나 이 방식이 흔함.
+        // 리스트는 0부터 시작하므로 -1
+        float index = percentile * (sortedList.Count - 1);
+
+        if (index < 0) return sortedList[0]; // 데이터가 1개인 경우 등
+        if (index >= sortedList.Count - 1) return sortedList[sortedList.Count - 1]; // 데이터가 1개인 경우 등
+
+        // 인덱스가 정수가 아닌 경우, 보간법 사용 (일반적으로 선형 보간)
+        int floorIndex = Mathf.FloorToInt(index);
+        int ceilIndex = Mathf.CeilToInt(index);
+
+        if (floorIndex == ceilIndex)
+        {
+            return sortedList[floorIndex];
+        }
+        else
+        {
+            float lowerValue = sortedList[floorIndex];
+            float upperValue = sortedList[ceilIndex];
+            float weight = index - floorIndex; // 소수점 부분
+
+            return lowerValue * (1 - weight) + upperValue * weight;
+        }
     }
 
     private void SaveResultsToFile(string content)
