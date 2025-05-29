@@ -24,7 +24,7 @@
 
 ## 핵심 기능 및 구현 상세
 
-본 프로젝트는 Unity URP 렌더링 파이프라인 내에 커스텀 Render Pass 형태로 워터마킹 기법을 구현했습니다. Post-Processing 이후의 최종 렌더 타겟에 직접 접근하여 워터마크 삽입 연산을 수행합니다[cite: 96].
+본 프로젝트는 Unity URP 렌더링 파이프라인 내에 커스텀 Render Pass 형태로 워터마킹 기법을 구현했습니다. Post-Processing 이후의 최종 렌더 타겟에 직접 접근하여 워터마크 삽입 연산을 수행합니다.
 
 ### 1. LSB (Least Significant Bit) 워터마킹
 
