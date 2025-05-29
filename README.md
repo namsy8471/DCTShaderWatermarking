@@ -1,5 +1,17 @@
 # Ream.me is written by Korean, Japanese, and English
 
+![DCT 워터마킹 강도 변경 (1)](https://github.com/user-attachments/assets/e76d6937-67e2-4b56-a20e-13fe688acc77)
+
+**그림 1.** 워터마킹 강도 변경(Fig 1. Adjusting DCT Watermarking Strength, 図1．DCT透かし強度変更)
+
+![DCT 워터마킹 시간 변경 (1)](https://github.com/user-attachments/assets/eca48c4a-986a-491f-82ac-c1c25943bdd3)
+
+**그림 2.** 워터마킹 활성화 시간 변경(Fig 2. Adjusting Watermark Application Duration, 図2．透かし有効時間変更)
+
+![DCT 확산 스팩트럼 계수 변경 (1)](https://github.com/user-attachments/assets/a921bc4c-c88c-42df-9f8b-3b2673087ba4)
+
+**그림 3.** 확산 스펙트럼 계수 변경(Fig 3. Adjusting Spread Spectrum Coefficient, 図3．拡散スペクトル係数の変更)
+
 # Unity SRP 기반 실시간 하이브리드 워터마킹 성능 및 화질 분석
 
 ## 프로젝트 개요
