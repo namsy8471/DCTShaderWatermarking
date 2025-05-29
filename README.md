@@ -1,4 +1,4 @@
-#(Ream.me is written by Korean, Japanese, and English)
+# Ream.me is written by Korean, Japanese, and English
 
 # Unity SRP 기반 실시간 하이브리드 워터마킹 성능 및 화질 분석
 
