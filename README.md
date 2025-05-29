@@ -94,6 +94,10 @@
 * 박정민 ([Jung-Min Park](mailto:jung.park@hongik.ac.kr))
 * 김혜영 ([Hye-Young Kim](mailto:hykim@hongik.ac.kr)) - Corresponding Author
 
+## 논문 투고 현황 (Publication Status)
+
+본 연구는 현재 **한국디지털콘텐츠학회논문지(Journal of Digital Contents Society)** 에 **투고 예정 (Pending Submission)** 입니다.
+
 ## 라이선스
 
 본 프로젝트의 코드는 **Creative Commons Attribution Non-Commercial 3.0 (CC BY-NC 3.0)** 라이선스에 따라 배포됩니다. 이는 비상업적인 용도로는 자유로운 사용, 배포, 복제, 그리고 2차적 저작물 작성을 허용하며, 원저작자(본 연구진)를 적절히 인용해야 합니다.
@@ -194,6 +198,10 @@
 * パク・ジョンミン (Jung-Min Park)
 * ウ・ジェヨン (Jae-Yeong Woo)
 
+## 論文投稿状況 (Publication Status)
+
+本研究論文は現在、**韓国デジタルコンテンツ学会論文誌 (Journal of Digital Contents Society)** へ **投稿予定 (Pending Submission)** です。
+
 ## ライセンス
 
 本プロジェクトのコードは、**Creative Commons Attribution Non-Commercial 3.0 (CC BY-NC 3.0)** ライセンスの下で配布されます。これにより、非営利目的での無制限の使用、配布、複製、派生作品の作成が許可され、元の作者（本研究者）は適切に引用される必要があります。
@@ -293,6 +301,10 @@ This project implements watermarking techniques as a Custom Render Pass within t
 * Si-Young Nam
 * Jung-Min Park
 * Jae-Yeong Woo
+
+## Publication Status
+
+This research paper is currently **pending submission** to the **Journal of Digital Contents Society (JDCS)**.
 
 ## License
 
