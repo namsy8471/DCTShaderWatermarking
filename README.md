@@ -104,7 +104,7 @@
 * 남시영 ([Si-young Nam](mailto:si.nam@hongik.ac.kr))
 * 우재영 ([Jae-Yeong Woo](mailto:jae.woo@hongik.ac.kr))
 * 박정민 ([Jung-Min Park](mailto:jung.park@hongik.ac.kr))
-* 김혜영 ([Hye-Young Kim](mailto:hykim@hongik.ac.kr)) - Corresponding Author
+* 김혜영 ([Hye-Young Kim](mailto:hykim@hongik.ac.kr)) - Corresponding Author - hykim@hongik.ac.kr
 
 ## 논문 투고 현황 (Publication Status)
 
