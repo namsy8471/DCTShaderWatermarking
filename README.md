@@ -108,7 +108,7 @@
 
 ## 논문 투고 현황 (Publication Status)
 
-본 연구는 현재 **한국디지털콘텐츠학회논문지(Journal of Digital Contents Society)** 에 **투고 예정 (Pending Submission)** 입니다.
+본 연구는 현재 **한국디지털콘텐츠학회논문지(Journal of Digital Contents Society)** 에 **투고(Submission)**하여 심사 중입니다.
 
 ## 라이선스
 
@@ -212,7 +212,7 @@
 
 ## 論文投稿状況 (Publication Status)
 
-本研究論文は現在、**韓国デジタルコンテンツ学会論文誌 (Journal of Digital Contents Society)** へ **投稿予定 (Pending Submission)** です。
+本研究論文は現在、**韓国デジタルコンテンツ学会論文誌 (Journal of Digital Contents Society)** へ **投稿し、査読中** です。
 
 ## ライセンス
 
@@ -316,7 +316,7 @@ This project implements watermarking techniques as a Custom Render Pass within t
 
 ## Publication Status
 
-This research paper is currently **pending submission** to the **Journal of Digital Contents Society (JDCS)**.
+This research paper has been **submitted** to the **Journal of Digital Contents Society (JDCS)** and is currently **under review**.
 
 ## License
 
