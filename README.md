@@ -65,8 +65,8 @@
     ```
 3.  **Unity 프로젝트 열기:** Unity Hub에서 클론한 프로젝트 폴더를 열어줍니다.
 4.  **Scene 실행:** `Assets/Scenes/` 경로에 있는 `[테스트_씬_이름].unity` 파일을 엽니다.
-5.  **성능 측정:** Unity 에디터의 `Window > Analysis > Profiler` 메뉴를 통해 Profiler 창을 열고, 재생 버튼을 눌러 성능을 측정합니다.
-6.  **화질 측정:** 화질 측정을 위한 Python 스크립트(`image_quality_analyzer.py` 등)는 `Assets/Scripts/ImageQuality/` 경로에 있습니다. Unity에서 워터마킹 전/후 이미지를 저장한 후, 해당 스크립트를 사용하여 PSNR, SSIM, MSE 값을 계산합니다.
+5.  **성능 측정:** 재생 버튼을 눌러 성능을 측정합니다.
+6.  **화질 측정:** 화질 측정을 위한 Python 스크립트(ImageQuality_gui.py)는 `Assets/Scripts/ImageQuality/` 경로에 있습니다. Unity에서 `F11`키로 워터마킹 전/후 이미지를 저장한 후, 해당 스크립트를 사용하여 PSNR, SSIM, MSE 값을 계산합니다.
 
 ## 주요 실험 결과
 
@@ -169,8 +169,8 @@
     ```
 3.  **Unityプロジェクトを開く:** Unity Hubでクローンしたプロジェクトフォルダーを開きます。
 4.  **シーンの実行:** `Assets/Scenes/`パスにある`[テストシーン名].unity`ファイルを開きます。
-5.  **性能測定:** Unityエディターで`Window > Analysis > Profiler`メニューからプロファイラーウィンドウを開き、再生ボタンを押して性能を測定します。
-6.  **画質測定:** 画質測定用のPythonスクリプト（例：`image_quality_analyzer.py`）は`Assets/Scripts/ImageQuality/`パスにあります。Unityで透かし適用前後の画像を保存した後、これらのスクリプトを使用してPSNR、SSIM、MSEの値を計算します。
+5.  **性能測定:** 再生ボタンを押して性能を測定します。
+6.  **画質測定:** 画質測定用のPythonスクリプト（ImageQuality_gui.py）は`Assets/Scripts/ImageQuality/`パスにあります。Unityで透かし適用前後の画像を`F11`キーで保存した後、これらのスクリプトを使用してPSNR、SSIM、MSEの値を計算します。
 
 ## 主要実験結果
 
@@ -273,8 +273,8 @@ This project implements watermarking techniques as a Custom Render Pass within t
     ```
 3.  **Open Unity Project:** Open the cloned project folder in Unity Hub.
 4.  **Run Scene:** Open the `[TEST_SCENE_NAME].unity` file located in `Assets/Scenes/`.
-5.  **Measure Performance:** Open the Profiler window via `Window > Analysis > Profiler` in the Unity editor, then press the play button to measure performance.
-6.  **Measure Image Quality:** Python scripts for image quality measurement (e.g., `image_quality_analyzer.py`) are located in `Assets/Scripts/ImageQuality/`. After saving pre- and post-watermarking images from Unity, use these scripts to calculate PSNR, SSIM, and MSE values.
+5.  **Measure Performance:** Press the play button to measure performance.
+6.  **Measure Image Quality:** Python scripts for image quality measurement (ImageQuality_gui.py) are located in `Assets/Scripts/ImageQuality/`. After saving pre- and post-watermarking images from Unity by pressing `F11` key, use these scripts to calculate PSNR, SSIM, and MSE values.
 
 ## Key Experimental Results
 
