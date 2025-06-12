@@ -29,7 +29,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bf337ed5485dba5478bea3acf84e577a, type: 3}
   m_Name: DWTRenderFeatureSS
   m_EditorClassIdentifier: 
-  m_Active: 1
+  m_Active: 0
   dwtComputeShader: {fileID: 7200000, guid: 2ff55af08f5b56840879091c9ce9614d, type: 3}
   embedBitstream: 1
   embeddingStrength: 1
@@ -95,14 +95,14 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c795dda60fd94d049a84aa71d8ca608c, type: 3}
   m_Name: DCTRenderFeatureOptimized
   m_EditorClassIdentifier: 
-  m_Active: 0
+  m_Active: 1
   ssRgbDctComputeShader: {fileID: 7200000, guid: cbfaad5dcbaf5614595a14f8c0cfcff7,
     type: 3}
   embedBitstream: 1
-  embeddingStrength: 1
+  embeddingStrength: 0.5
   secretKey: OriginBlockData
-  coefficientsToUse: 1
-  displayDuration: 1
+  coefficientsToUse: 29
+  displayDuration: 0.02
 --- !u!114 &-1898557105666974581
 MonoBehaviour:
   m_ObjectHideFlags: 0
