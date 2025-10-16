@@ -5,7 +5,7 @@
 본 연구는 현재 **한국디지털콘텐츠학회논문지(Journal of Digital Contents Society)** 에 **게제**되었습니다.  
 本研究論文は現在、**韓国デジタルコンテンツ学会論文誌 (Journal of Digital Contents Society)** へ **掲載** されました。  
 This research paper was **published** in the **Journal of Digital Contents Society (JDCS)**.  
-Link: https://www.dbpia.co.kr/Journal/articleDetail?nodeId=NODE12296276
+Link: https://www.kci.go.kr/kciportal/ci/sereArticleSearch/ciSereArtiView.kci?sereArticleSearchBean.artiId=ART003228918
 
 ![DCT 워터마킹 강도 변경 (1)](https://github.com/user-attachments/assets/e76d6937-67e2-4b56-a20e-13fe688acc77)
 
