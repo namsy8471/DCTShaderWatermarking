@@ -12,11 +12,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 118da7909a36c7648b60d13550f6d087, type: 3}
   m_Name: LSBRenderFeature
   m_EditorClassIdentifier: 
-  m_Active: 0
-  lsbComputeShader: {fileID: 7200000, guid: 2691d7ee8c623fc439873daa7cff5aac, type: 3}
-  embedBitstream: 1
-  addressableKey: OriginBlockData
+  m_Active: 1
+  embedBitstream: 0
   displayDuration: 0.5
+  lsbComputeShader: {fileID: 7200000, guid: 2691d7ee8c623fc439873daa7cff5aac, type: 3}
+  addressableKey: OriginBlockData
 --- !u!114 &-6703497610123772460
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -29,13 +29,13 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bf337ed5485dba5478bea3acf84e577a, type: 3}
   m_Name: DWTRenderFeatureSS
   m_EditorClassIdentifier: 
-  m_Active: 0
+  m_Active: 1
+  embedBitstream: 0
+  displayDuration: 0.19580738
   dwtComputeShader: {fileID: 7200000, guid: 2ff55af08f5b56840879091c9ce9614d, type: 3}
-  embedBitstream: 1
-  embeddingStrength: 1
+  embeddingStrength: 0.6621473
   addressableKey: OriginBlockData
-  coefficientsToUse: 1
-  displayDuration: 1
+  coefficientsToUse: 16
 --- !u!114 &-6575308690640035461
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -96,13 +96,13 @@ MonoBehaviour:
   m_Name: DCTRenderFeatureOptimized
   m_EditorClassIdentifier: 
   m_Active: 1
+  embedBitstream: 0
+  displayDuration: 1
   ssRgbDctComputeShader: {fileID: 7200000, guid: cbfaad5dcbaf5614595a14f8c0cfcff7,
     type: 3}
-  embedBitstream: 1
-  embeddingStrength: 0.5
+  embeddingStrength: 0.1262428
   secretKey: OriginBlockData
-  coefficientsToUse: 29
-  displayDuration: 0.02
+  coefficientsToUse: 15
 --- !u!114 &-1898557105666974581
 MonoBehaviour:
   m_ObjectHideFlags: 0

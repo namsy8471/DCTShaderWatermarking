@@ -808,6 +808,7 @@ GameObject:
   - component: {fileID: 572246014}
   - component: {fileID: 572246015}
   - component: {fileID: 572246016}
+  - component: {fileID: 572246017}
   m_Layer: 0
   m_Name: utils
   m_TagString: Untagged
@@ -827,11 +828,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 054fde7431a42ef43b6c9e9a2075a675, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  testIdentifier: LSB 0.5
-  benchmarkDuration: 30
+  testIdentifier: Benchmark Window
+  benchmarkDuration: -1
   frameLimit: -1
-  warmupDuration: 5
-  quitAfterBenchmark: 1
+  warmupDuration: -1
+  quitAfterBenchmark: 0
   showRealtimeStats: 1
   guiSkin: {fileID: 0}
 --- !u!4 &572246012
@@ -914,6 +915,20 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   saveKey: 292
+--- !u!114 &572246017
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 572246010}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f3ab98591a4a67a4ab57595a6fb7c82f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  toggleKey: 96
+  startVisible: 1
 --- !u!1 &630867832
 GameObject:
   m_ObjectHideFlags: 3

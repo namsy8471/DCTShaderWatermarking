@@ -1,4 +1,11 @@
-# Ream.me is written by Korean, Japanese, and English
+# 실시간 렌더링 환경에서 워터마킹의 이미지 화질 성능 비교 분석(Comparative Analysis of Image Quality Performance for Watermarking in Real-Time Rendering Environments)
+
+## 논문 투고 현황 (Publication Status)
+
+본 연구는 현재 **한국디지털콘텐츠학회논문지(Journal of Digital Contents Society)** 에 **게제**되었습니다.  
+本研究論文は現在、**韓国デジタルコンテンツ学会論文誌 (Journal of Digital Contents Society)** へ **掲載** されました。  
+This research paper was **published** in the **Journal of Digital Contents Society (JDCS)**.  
+DOI: 10.9728/dcs.2025.26.7.1881
 
 ![DCT 워터마킹 강도 변경 (1)](https://github.com/user-attachments/assets/e76d6937-67e2-4b56-a20e-13fe688acc77)
 
@@ -12,7 +19,7 @@
 
 **그림 3.** 확산 스펙트럼 계수 변경(Fig 3. Adjusting Spread Spectrum Coefficient, 図3．拡散スペクトル係数の変更)
 
-# Unity SRP 기반 실시간 하이브리드 워터마킹 성능 및 화질 분석
+# 실시간 렌더링 환경에서 워터마킹의 이미지 화질 성능 비교 분석
 
 ## 프로젝트 개요
 
@@ -106,17 +113,13 @@
 * 박정민 ([Jung-Min Park](mailto:kalsbold@mail.hongik.ac.kr))
 * 김혜영 ([Hye-Young Kim](mailto:hykim@hongik.ac.kr)) - Corresponding Author
 
-## 논문 투고 현황 (Publication Status)
-
-본 연구는 현재 **한국디지털콘텐츠학회논문지(Journal of Digital Contents Society)** 에 **투고(Submission)하여 심사 중**입니다.
-
 ## 라이선스
 
 본 프로젝트의 코드는 **Creative Commons Attribution Non-Commercial 3.0 (CC BY-NC 3.0)** 라이선스에 따라 배포됩니다. 이는 비상업적인 용도로는 자유로운 사용, 배포, 복제, 그리고 2차적 저작물 작성을 허용하며, 원저작자(본 연구진)를 적절히 인용해야 합니다.
 
 * **라이선스 전문 보기:** [http://creativecommons.org/licenses/by-nc/3.0/](http://creativecommons.org/licenses/by-nc/3.0/)
 
-# Unity SRPベースのリアルタイムハイブリッド透かしの性能と画質分析
+# リアルタイムレンダリング環境におけるウォーターマーキングの画像品質性能比較分析
 
 ## プロジェクト概要
 
@@ -210,17 +213,13 @@
 * パク・ジョンミン (Jung-Min Park)
 * ウ・ジェヨン (Jae-Yeong Woo)
 
-## 論文投稿状況 (Publication Status)
-
-本研究論文は現在、**韓国デジタルコンテンツ学会論文誌 (Journal of Digital Contents Society)** へ **投稿し、査読中** です。
-
 ## ライセンス
 
 本プロジェクトのコードは、**Creative Commons Attribution Non-Commercial 3.0 (CC BY-NC 3.0)** ライセンスの下で配布されます。これにより、非営利目的での無制限の使用、配布、複製、派生作品の作成が許可され、元の作者（本研究者）は適切に引用される必要があります。
 
 * **ライセンス全文を見る:** [http://creativecommons.org/licenses/by-nc/3.0/](http://creativecommons.org/licenses/by-nc/3.0/)
 
-# Performance and Image Quality Analysis of Unity SRP-Based Real-time Hybrid Watermarking
+# Comparative Analysis of Image Quality Performance for Watermarking in Real-Time Rendering Environments
 
 ## Project Overview
 
@@ -313,10 +312,6 @@ This project implements watermarking techniques as a Custom Render Pass within t
 * Si-Young Nam
 * Jung-Min Park
 * Jae-Yeong Woo
-
-## Publication Status
-
-This research paper has been **submitted** to the **Journal of Digital Contents Society (JDCS)** and is currently **under review**.
 
 ## License
 
