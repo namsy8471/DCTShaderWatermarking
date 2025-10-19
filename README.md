@@ -208,10 +208,10 @@ DOI: 10.9728/dcs.2025.26.7.1881
 
 ## 貢献者
 
-* キム・ヘヨン (Hye-Young Kim) - 責任著者 (Corresponding Author) - hykim@hongik.ac.kr
 * ナム・シヨン (Si-Young Nam)
-* パク・ジョンミン (Jung-Min Park)
 * ウ・ジェヨン (Jae-Yeong Woo)
+* パク・ジョンミン (Jung-Min Park)
+* キム・ヘヨン (Hye-Young Kim) - 責任著者 (Corresponding Author) - hykim@hongik.ac.kr
 
 ## ライセンス
 
@@ -308,10 +308,10 @@ This project implements watermarking techniques as a Custom Render Pass within t
 
 ## Contributors
 
-* Hye-Young Kim - Corresponding Author - hykim@hongik.ac.kr
 * Si-Young Nam
-* Jung-Min Park
 * Jae-Yeong Woo
+* Jung-Min Park
+* Hye-Young Kim - Corresponding Author - hykim@hongik.ac.kr
 
 ## License
 
