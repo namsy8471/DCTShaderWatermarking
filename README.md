@@ -1,5 +1,11 @@
 # 실시간 렌더링 환경에서 워터마킹의 이미지 화질 성능 비교 분석(Comparative Analysis of Image Quality Performance for Watermarking in Real-Time Rendering Environments)
 
+## Video Link
+
+Link : https://youtu.be/_CDhoHsq0Zk
+
+---
+
 ## 논문 투고 현황 (Publication Status)
 
 본 연구는 현재 **한국디지털콘텐츠학회논문지(Journal of Digital Contents Society)** 에 **게제**되었습니다.  
