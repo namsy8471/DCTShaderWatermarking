@@ -2,7 +2,8 @@
 
 ## Video Link
 
-Link : https://youtu.be/_CDhoHsq0Zk
+Link(한국어 자막) : https://youtu.be/eFEQVB5VTXU  
+Link(日本語字幕）: https://youtu.be/_CDhoHsq0Zk
 
 ---
 
